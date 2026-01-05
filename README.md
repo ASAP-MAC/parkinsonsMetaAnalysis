@@ -30,8 +30,18 @@ curl https://huggingface.co/datasets/waldronlab/metagenomics_mac/resolve/main/ge
 ```
 
 ```
-quarto render 02-download-data.qmd -P data_type:relative_abundance
-quarto render 02-download-data.qmd -P data_type:pathabundance_unstratified
-# this last step doesn't work yet
+quarto render 02-download-data.qmd -P pMD_data_type:relative_abundance
+quarto render 02-download-data.qmd -P pMD_data_type:pathabundance_unstratified
+# this last step only works in machines with large amounts of memory (> 64G)
 quarto render 02-download-data.qmd -P genefamilies_unstratified
 ``` 
+
+```
+quarto render 03-Main-Analysis.qmd -P pMD_data_type:relative_abundance
+quarto render 03-Main-Analysis.qmd -P pMD_data_type:pathabundance_unstratified
+```
+
+```
+quarto render healthy-constipated-analysis.qmd -P pMD_data_type:relative_abundance
+quarto render healthy-constipated-analysis.qmd -P pMD_data_type:pathabundance_unstratified
+```

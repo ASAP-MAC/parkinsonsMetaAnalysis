@@ -65,19 +65,16 @@ enrich_y_taxonomy_label <- function(taxFP, taxonomy.df){
     theme(axis.text.y.left = element_markdown())
 }
 
-enrich_y_pathway_label <- function(FP, pathway_rowData){
+enrich_y_pathway_label <- function(pathFP, pathway_rowData){
     
-  AltName.chr <- paste0(pathway_rowData$Description, " [", pathway_rowData$MetaCyc_code, "]")
+  AltName.chr <- paste0(pathway_rowData$Description, " [", pathway_rowData$MetaCyc_code_safeName, "]")
     names(AltName.chr) <- rownames(pathway_rowData)
     
-    FP +
+    pathFP +
       scale_y_discrete(
         labels = function(y) {
           AltNameBasic <- AltName.chr[y]
-          AltNameItalics <- strsplit(AltNameBasic, "\\ ") %>% lapply(function(x) 
-            ifelse(!("_" %in% x) & str_ends(x, "cter|culum|terium|cter|monas|us|ctor|ella|asma|soma|spira|cola|des|is|aecis|ia|cus|ans|spora|ina|zii|pri"), paste0("*", x, "*"), x)) %>% 
-            purrr::map_chr(.f = function(x) paste(x, collapse = " "))
-          return(AltNameItalics)
+          return(AltNameBasic)
         }
       ) +
       theme(axis.text.y.left = element_markdown())

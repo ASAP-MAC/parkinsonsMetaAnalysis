@@ -7,9 +7,9 @@ format:
     embed-resources: true
     toc: true
     toc-depth: 2
-editor: visual
+editor: source
 params:
-  data_type: "relative_abundance"
+  pMD_data_type: "relative_abundance"
   overwrite_output: "yes"
 ---
 
@@ -67,66 +67,41 @@ metadata_datasets_available[, sapply(metadata_datasets_available, function(x) su
   datatable()
 ```
 
-### write uuids as simple text file
-
-```{r}
-writeLines(metadata_datasets_available$uuid, "Data/uuid_available.txt")
-```
-
 ## Available downloadable data types
 
 ```{r}
 datatable(parkinsonsMetagenomicData::biobakery_files())
 ```
 
-## Download parkinsonsMetagenomicData for `r params$data_type`
+## Download parkinsonsMetagenomicData for `r params$pMD_data_type`
 
-```{r, eval=params$data_type != "genefamilies_unstratified"}
-raw.tse <- returnSamples(data_type = params$data_type,
+```{r, eval=params$pMD_data_type != "genefamilies_unstratified"}
+raw.tse <- returnSamples(pMD_data_type = params$pMD_data_type,
                                             sample_data = metadata_datasets_available)
 
 # enhance data 
-parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, data_type = params$data_type, sampleMetadata.df = metadata_datasets_available)
+parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, pMD_data_type = params$pMD_data_type, sampleMetadata.df = metadata_datasets_available)
 ```
 
-```{r, eval=params$data_type == "relative_abundance"}
+```{r, eval=params$pMD_data_type == "relative_abundance"}
 parkinsonsMetaAnalysisData.tse <- AddPhyloTree_to_mpa_tse(parkinsonsMetaAnalysisData.tse, CHOCOPhlAn_version = "202403")  
 ```
 
-```{r, eval=params$data_type == "genefamilies_unstratified"}
-# parquet_raw <- arrow::read_parquet(
-#   file = "~/Downloads/genefamilies_unstratified_uuid.parquet", col_select = c("gene_family","rpk_abundance", "uuid")
-#   )
-library(arrow)
-file.pq <- open_dataset("~/Downloads/genefamilies_unstratified_uuid.parquet", )
+## Split Boktor JC into 2 studies
 
-file_filt.pq <- file.pq %>%
-  filter(uuid %in% metadata_datasets_available$uuid) %>%
-  collect()
+```{r}
+tmp <- parkinsonsMetaAnalysisData.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  mutate(
+    study_name = gsub("\\.1$", "", paste(study_name, as.integer(as.factor(BioProject)), sep = "."))
+  ) %>% 
+  ungroup()
 
-# code below crashes due to too much memory used
-# data_matrix <- reshape2::acast(file_filt.pq, rpk_abundance ~ gene_family ~ uuid)
-data_matrix <- pivot_wider(
-  file_filt.pq, 
-  names_from = c("gene_family", "uuid"), 
-  values_from = "rpk_abundance"
-  )
-# parquet_raw <- nanoparquet::read_parquet(
-#   file = "~/Downloads/genefamilies_unstratified_uuid.parquet", 
-#   col_select = c("gene_family","rpk_abundance", "uuid"), 
-#   )
+# Re-fix rownames
+rownames(tmp) <- tmp$uuid
 
-
-parquet_raw <- data.table::as.data.table(parquet_raw)
-parquet__subset <- parquet_raw[uuid %in% metadata_] %>%
-  filter(uuid %in% metadata_datasets_available$uuid)
-
-
-raw.tse <- returnSamples(data_type = "genefamilies_unstratified",
-                                            sample_data = metadata_datasets_available, 
-                         local_files = "~/Downloads/genefamilies_unstratified_uuid.parquet")
-
-tse_intermediate <- pMD_enhance(input.tse = raw.tse, data_type = params$data_type)
+parkinsonsMetaAnalysisData.tse@colData <- DataFrame(tmp)
 ```
 
 ## Add curated information about the Country of the participants/samples
@@ -138,17 +113,69 @@ names(country_per_study.chr) <- country_per_study$study_name
 parkinsonsMetaAnalysisData.tse@colData$Country_ga <- country_per_study.chr[parkinsonsMetaAnalysisData.tse@colData$study_name]
 ```
 
-## Write results
+## Sanity checks before saving data
+
+### All-0 samples (NAs not allowed)
+
+```{r}
+all_0.logical <- lapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2 <- colSums(x) == 0
+  return(x2[x2 & !is.na(x2)])
+})
+
+sapply(all_0.logical, sum)
+
+```
+
+### NAs in any|all sample across any assay
+
+```{r}
+
+anyNAs.logical <- lapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2 <- apply(x, 2, anyNA)
+  return(x2[x2])
+})
+
+sapply(anyNAs.logical, sum)
+```
+
+### Samples with all counts/abundances assigned to `UNCLASSIFIED|UNMAPPED|UNINTEGRATED`
+
+```{r}
+all_counts_UN <- lapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2 <- colSums(x[!grepl("UN", rownames(x)),, drop = FALSE]) == 0
+  return(x2[x2 & !is.na(x2)])
+})
+
+sapply(all_counts_UN, sum)
+```
+
+### Filter out failed samples across all assays, to be consistent with the `colData`
+
+Filter each assay based on all criteria above. It must be done across all
+samples
+
+```{r}
+unique_samples_union <- unique(c(
+  unname(do.call(c, sapply(all_0.logical, names))),
+  unname(do.call(c, sapply(anyNAs.logical, names))),
+  unname(do.call(c, sapply(all_counts_UN, names)))
+  ))
+
+parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData.tse[, !(colnames(parkinsonsMetaAnalysisData.tse) %in% unique_samples_union)]
+```
+
+## Write TSE file
 
 ```{r, message=TRUE}
-nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$data_type == params$data_type], params$data_type, sep = "_")
+nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$pMD_data_type == params$pMD_data_type], params$pMD_data_type, sep = "_")
 fullOutName <- sprintf("Data/%s.tse", nameSuffix)
 
 if(params$overwrite_output == "yes"){
   unlink(fullOutName, recursive = TRUE)
 }
 
-write_TSE_to_dir(parkinsonsMetaAnalysisData.tse, out.dir = fullOutName)
+write_TSE_to_dir(parkinsonsMetaAnalysisData_pruned.tse, out.dir = fullOutName)
 
 message(sprintf("Data saved in: %s", fullOutName))
 ```
