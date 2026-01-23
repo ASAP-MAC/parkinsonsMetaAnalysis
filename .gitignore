@@ -22,8 +22,11 @@
 # ignore Google Cloud bucket authentication
 curatedmetagenomicdata-232f4a306d1d.json
 
-# Ignore the .Rproject objects
-.Rproj.user
+# Do not gnore the .Rproject object and renv
+!.Rproj.user
+!renv.lock
 
 # ignore Macintosh DS_Store
 .DS_Store
+
+# Don't 
