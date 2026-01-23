@@ -21,7 +21,8 @@ Parkinson's disease is one of the disease with the strongest microbiome componen
 
 I want to prove that, aside from an overlap, there is a large portion of PD associations that are independent of constipation.
 
-Natasha's paper is fundamental for discussion, because they show
+Natasha's paper is fundamental for discussion, because they show a trend of change of bacteria with worsening PD, so they really seem to be more affected with PD than in constipation
+They also show a considerable overlap between the signatures [Palacios 2023](https://pubmed.ncbi.nlm.nih.gov/37314861/)
 
 # Analysis plan
 

@@ -9,7 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  pMD_data_type: "pathabundance_unstratified"
+  pMD_data_type: "relative_abundance"
   pseudocount: 1e-8
   transform: "asin_sqrt"
   prevalThresh: 0.05
@@ -39,7 +39,7 @@ library(limma)
 library(biobakeryUtils)
 theme_set(theme_bw())
 
-source("R/lm_standardization_utility_functions.R")
+source("../R/lm_standardization_utility_functions.R")
 ```
 
 # `AsnicarF_2021`
@@ -47,10 +47,13 @@ source("R/lm_standardization_utility_functions.R")
 ## Load private metadata and define transit time groups
 
 ```{r}
+# This generates a merged version to map to predict metadata
+source("../Data/bluePoo/bluePoo_metadata/bluePoo_harmonize_metadata.R")
+
 studyNames <- c("WallenZD_2022", "AsnicarF_2021")
 bluePoo_vars.chr <- c("bowel_movements_last_7_days", "bristol_stool_score_average_last_3_months", "transit time (days)")
 # load separate asnicar metadata
-bluePoo_meta_raw.df <- read_tsv("Data/bluePoo/bluePoo_metadata/bluePoo_metadata_ga.tsv") 
+bluePoo_meta_raw.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/bluePoo_metadata_ga.tsv") 
 
 # process what we need from this metadata
 AsnicarF_meta_select.df <-  bluePoo_meta_raw.df %>% 
@@ -65,7 +68,7 @@ AsnicarF_meta_select.df <-  bluePoo_meta_raw.df %>%
      transitTimeCutClasses == "C4" ~ "Slow"
      ) %>% factor(c("Normal", "Fast", "Slow"))
     )
-AsnicarF_pMD.df <- read_tsv("Data/bluePoo/bluePoo_metadata/AsnicarF_2021.tsv")
+AsnicarF_pMD.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/AsnicarF_2021.tsv")
 
 Asnicar_complete.df <- inner_join(AsnicarF_meta_select.df, AsnicarF_pMD.df, by = "subject_id")
 ```
@@ -106,6 +109,9 @@ Asnicar_complete.tse <- basic.tse %>%
   biobakeryUtils::pMD_enhance(data_type = params$pMD_data_type)%>% 
   replace_colData(Asnicar_complete.df %>% as.data.frame() %>% set_rownames(.$uuid))
 
+# Remove UNCLASSIFIED (MetaPhlAn) |UNMAPPED (HUMAnN) |UNINTEGRATED (HUMAnN) rows
+Asnicar_complete.tse <- Asnicar_complete.tse[!grepl("UN", rownames(Asnicar_complete.tse)),]
+
 assay(Asnicar_complete.tse, "asin_hellinger") <- asin(sqrt(assay(Asnicar_complete.tse, "relabundance")))
 
 # get only available covariate variables
@@ -113,6 +119,8 @@ Asnicar_complete_no_NA_Constipation.tse <- Asnicar_complete.tse[, !is.na(Asnicar
 
 # remove all-0 rows after filtering
 Asnicar_complete_no_NA_Constipation.tse <- Asnicar_complete_no_NA_Constipation.tse[rowSums(assay(Asnicar_complete_no_NA_Constipation.tse, "relabundance")) > 0,]
+
+Asnicar_complete_no_NA_Constipation.tse
 ```
 
 ## Fit Asnicar Data (`asin(Hellinger)`)
@@ -120,7 +128,7 @@ Asnicar_complete_no_NA_Constipation.tse <- Asnicar_complete_no_NA_Constipation.t
 ```{r}
 
 slow_vs_normal <- limmaFit_TSE(Asnicar_complete_no_NA_Constipation.tse, assay.type = "asin_hellinger", formula = ~ transitTimeCutClassesDef, coef = "transitTimeCutClassesDefSlow") %>% 
-  arrange(adj.P.Value) %>% 
+  arrange(P.Value.adj.BH) %>% 
   mutate(
     CohenD = cohen_d_from_lm(
     n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Slow"), 
@@ -137,7 +145,7 @@ slow_vs_normal_prev5pct <- slow_vs_normal %>%
   filter(N_not_zero/N_zero >= 0.05)
 
 fast_vs_normal <- limmaFit_TSE(Asnicar_complete_no_NA_Constipation.tse, assay.type = "asin_hellinger", formula = ~ transitTimeCutClassesDef, coef = "transitTimeCutClassesDefFast") %>% 
-  arrange(adj.P.Value) %>% 
+  arrange(P.Value.adj.BH) %>% 
   mutate(
     CohenD = cohen_d_from_lm(
     n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Fast"), 
@@ -153,7 +161,7 @@ fast_vs_normal <- limmaFit_TSE(Asnicar_complete_no_NA_Constipation.tse, assay.ty
 fast_vs_normal_prev5pct <- fast_vs_normal%>% 
   filter(N_not_zero/N_zero >= 0.05)
 
-inner_join(fast_vs_normal_prev5pct, slow_vs_normal_prev5pct, by = "SGB") %>% 
+inner_join(fast_vs_normal_prev5pct, slow_vs_normal_prev5pct, by = "FeatureID") %>% 
   ggplot(aes(x = Beta.x, y = Beta.y)) + 
   geom_point() + 
   geom_abline(intercept = 0, slope = 1, color = "red") + 
@@ -176,7 +184,7 @@ Associations of fast and slow transit against normal transit return negatively c
 WallenZD_2022.tse <- sampleMetadata %>% 
   filter(study_name == "WallenZD_2022") %>% 
   returnSamples(data_type = params$pMD_data_type) %>% 
-  pMD_enhance_MetaPhlAn()
+  pMD_enhance(data_type = params$pMD_data_type)
 
 # remove swab samples
 WallenZD_2022_noSwabs.tse <- WallenZD_2022.tse[, WallenZD_2022.tse@colData$uncurated_collection_method != "swab"]
@@ -201,7 +209,7 @@ WallenZD_2022_noSwabs_noPD.tse <- WallenZD_2022_noSwabs_noPD.tse[rowSums(assay(W
 WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation <- factor(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation, levels = c("N", "Y"))
 
 wallen_fit_Controls_constipated_vs_not_constipated <- limmaFit_TSE(WallenZD_2022_noSwabs_noPD.tse, assay.type = "asin_hellinger", formula = ~ uncurated_constipation, coef = "uncurated_constipationY") %>% 
-  arrange(adj.P.Value) %>% 
+  arrange(P.Value.adj.BH) %>% 
   mutate(CohenD = cohen_d_from_lm(
     n1 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "Y"), 
     n2 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "N"), 
@@ -220,7 +228,7 @@ wallen_fit_Controls_constipated_vs_not_constipated_5perc <- wallen_fit_Controls_
 # Write tables
 
 ```{r}
-outdir <- sprintf("results/04-Constipation__%s", params$pMD_data_type)
+outdir <- sprintf("../results/04-Constipation__%s", params$pMD_data_type)
 dir.create(outdir)
 
 write_xlsx(wallen_fit_Controls_constipated_vs_not_constipated_5perc, file = sprintf("%s/limma_regression_WallenZD_2022_ConstipatedControls.xlsx", outdir))
@@ -234,7 +242,8 @@ write_xlsx(
 # Compare effect sizes of the two associations
 
 ```{r}
-constipation_joined_analyses <- inner_join(wallen_fit_Controls_constipated_vs_not_constipated_5perc, slow_vs_normal_prev5pct, by = colnames(select(slow_vs_normal_prev5pct, Kingdom:SGB)), suffix = c(".Wallen", ".Asnicar"))
+merging_cols <- colnames(wallen_fit_Controls_constipated_vs_not_constipated_5perc)[1:(which(colnames(wallen_fit_Controls_constipated_vs_not_constipated_5perc) == "N") - 1)]
+constipation_joined_analyses <- inner_join(wallen_fit_Controls_constipated_vs_not_constipated_5perc, slow_vs_normal_prev5pct, by = merging_cols, suffix = c(".Wallen", ".Asnicar"))
 ```
 
 ## Top 10 largest deviations
@@ -243,7 +252,7 @@ constipation_joined_analyses <- inner_join(wallen_fit_Controls_constipated_vs_no
 constipation_joined_analyses_sub <- constipation_joined_analyses %>% 
   mutate(absDiff = abs(Beta.Wallen - Beta.Asnicar)) %>% 
   arrange(desc(absDiff)) %>% 
-  select(Species, SGB, contains(c("CohenD", "CohenSE", "Beta", "SE", "adj.P.Value")), absDiffBetas = absDiff)
+  select(FeatureID, contains(c("CohenD", "CohenSE", "Beta", "SE", "adj.P.Value")), absDiffBetas = absDiff)
 
 constipation_joined_analyses_sub %>% 
   mutate_if(is.numeric, format, scientif = TRUE, digits = 1) %>% 
@@ -253,12 +262,12 @@ constipation_joined_analyses_sub %>%
 # Overlap with PD meta-analysis
 
 ```{r}
-meta_analysis <- read_xlsx(sprintf("results/03_meta_analysis__%s/02-meta_analysis_%s_PD_only.xlsx", params$pMD_data_type, params$transform), sheet = "Meta-Analysis")
+meta_analysis <- read_xlsx(sprintf("../results/03_meta_analysis__%s/02-meta_analysis_%s_PD_only.xlsx", params$pMD_data_type, params$transform), sheet = "Meta-Analysis")
 colnames(meta_analysis) <- gsub("RE_", "", colnames(meta_analysis))
 
 meta_analysis_subset <- meta_analysis %>% 
   transmute(
-    SGB, 
+    FeatureID, 
     Eff.Size,
     PD_assoc_metaAnalysis = case_when(
       Eff.Size > 0 & FDR < 0.1 ~ "Increased", 
@@ -268,8 +277,8 @@ meta_analysis_subset <- meta_analysis %>%
     )
   )
 
-meta_analysis_subset_with_PD_metaAnalysis <- full_join(constipation_joined_analyses_sub, meta_analysis_subset, by = "SGB") %>% 
-  relocate(PD_assoc_metaAnalysis, .after = 'SGB') %>% 
+meta_analysis_subset_with_PD_metaAnalysis <- full_join(constipation_joined_analyses_sub, meta_analysis_subset, by = "FeatureID") %>% 
+  relocate(PD_assoc_metaAnalysis, .after = 'FeatureID') %>% 
   mutate(PD_assoc_metaAnalysis = ifelse(is.na(PD_assoc_metaAnalysis), "Not tested", PD_assoc_metaAnalysis))
 ```
 
