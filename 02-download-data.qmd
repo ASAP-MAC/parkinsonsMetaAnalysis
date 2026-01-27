@@ -76,11 +76,11 @@ datatable(parkinsonsMetagenomicData::biobakery_files())
 ## Download parkinsonsMetagenomicData for `r params$pMD_data_type`
 
 ```{r, eval=params$pMD_data_type != "genefamilies_unstratified"}
-raw.tse <- returnSamples(pMD_data_type = params$pMD_data_type,
+raw.tse <- returnSamples(data_type = params$pMD_data_type,
                                             sample_data = metadata_datasets_available)
 
 # enhance data 
-parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, pMD_data_type = params$pMD_data_type, sampleMetadata.df = metadata_datasets_available)
+parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, data_type = params$pMD_data_type, sampleMetadata.df = metadata_datasets_available)
 ```
 
 ```{r, eval=params$pMD_data_type == "relative_abundance"}
@@ -157,9 +157,9 @@ samples
 
 ```{r}
 unique_samples_union <- unique(c(
-  unname(do.call(c, sapply(all_0.logical, names))),
-  unname(do.call(c, sapply(anyNAs.logical, names))),
-  unname(do.call(c, sapply(all_counts_UN, names)))
+  unname(do.call(c, lapply(all_0.logical, names))),
+  unname(do.call(c, lapply(anyNAs.logical, names))),
+  unname(do.call(c, lapply(all_counts_UN, names)))
   ))
 
 parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData.tse[, !(colnames(parkinsonsMetaAnalysisData.tse) %in% unique_samples_union)]
@@ -168,7 +168,7 @@ parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData.tse[, !(coln
 ## Write TSE file
 
 ```{r, message=TRUE}
-nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$pMD_data_type == params$pMD_data_type], params$pMD_data_type, sep = "_")
+nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$data_type == params$pMD_data_type], params$pMD_data_type, sep = "_")
 fullOutName <- sprintf("Data/%s.tse", nameSuffix)
 
 if(params$overwrite_output == "yes"){

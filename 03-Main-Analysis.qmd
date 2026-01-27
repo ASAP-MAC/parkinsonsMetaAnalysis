@@ -9,7 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  pMD_data_type: "pathabundance_unstratified"
+  pMD_data_type: "relative_abundance"
   pseudocount: 1e-8
   transform: "asin_sqrt"
   prevalThresh: 0.05
@@ -80,9 +80,9 @@ Input.tse@colData$number_diseases <- ifelse(Input.tse@colData$disease == "Health
 
 
 # assay-wise curations
-assay(Input.tse, params$transform) <- asin(sqrt(assay(Input.tse, "relabundance")))
+assay(Input.tse, params$transform) <- asin(sqrt(assay(Input.tse, params$pMD_data_type)))
 # calculate CLR 
-Input.tse <- transformAssay(Input.tse, assay.type = "relabundance", method = "clr", pseudocount = as.numeric(params$pseudocount))
+Input.tse <- transformAssay(Input.tse, assay.type = params$pMD_data_type, method = "clr", pseudocount = as.numeric(params$pseudocount))
 
 Input.tse
 ```
@@ -181,7 +181,7 @@ write_tsv(biobakeryUtils::PERMANOVA_to_table(Input.tse, name = "Aitchison_PERMAN
 # Bray-Curtis PCoA
 
 ```{r, eval=FALSE, fig.height=12, fig.width=9}
-Input.tse <- addMDS(Input.tse[rownames(Input.tse) != "UNINTEGRATED"], assay.type = "relabundance", method = "bray", name = "bray")
+Input.tse <- addMDS(Input.tse[rownames(Input.tse) != "UNINTEGRATED"], assay.type = params$pMD_data_type, method = "bray", name = "bray")
 
 variances_explained <- attr(reducedDim(Input.tse, "bray"), "eig")
 prop_variances_explained <- variances_explained/sum(variances_explained)
@@ -255,7 +255,7 @@ plot_panel_bray
 ```{r PERMANOVA bray, eval=FALSE}
 Input.tse <- addPERMANOVA(
   Input.tse,
-  assay.type = "relabundance",
+  assay.type = params$pMD_data_type,
   method = "bray",
   name = "bray_PERMANOVA",
   formula = x ~ study_name + Parkinson_1_0,
@@ -356,15 +356,15 @@ cases_ctrls_vs_study_name_wider %>%
 ## Filter input data to contain only acceptable studies and taxa with preval \>= \``r params$prevalThresh`%\`
 
 ```{r}
-Input_filtered.tse <- Input.tse[,Input.tse@colData$study_name %in% study_names_usable]
+Input_usableDatasets.tse <- Input.tse[,Input.tse@colData$study_name %in% study_names_usable]
 
-prevals <- getPrevalence(Input_filtered.tse, assay.type = "relabundance")
+prevals <- getPrevalence(Input_usableDatasets.tse, assay.type = params$pMD_data_type)
   
-Input_filtered.tse <- Input_filtered.tse[prevals >= as.numeric(params$prevalThresh),]
+Input_usableDatasets.tse <- Input_usableDatasets.tse[prevals >= as.numeric(params$prevalThresh),]
 ```
 
 ```{r}
-Input_filtered.tse
+Input_usableDatasets.tse
 ```
 
 ## Perform lm
@@ -373,7 +373,7 @@ Input_filtered.tse
 library(limma)
 GTDB.df <- read_tsv("Data/GTDB_202403.tsv")
 
-per_dataset_limma_results.list <- Input_filtered.tse %>% 
+per_dataset_limma_results.list <- Input_usableDatasets.tse %>% 
   splitOn(group = "study_name") %>% 
   lapply(function(x.tse) {
     x.tse <- x.tse[rowSums(assay(x.tse, params$transform)) > 0,]
@@ -403,7 +403,7 @@ per_dataset_limma_results.list <- Input_filtered.tse %>%
 # Add two types of available taxonomies
 #per_dataset_limma_results_GTDB.list <- lapply(per_dataset_limma_results.list, function(x) dplyr::right_join(GTDB.df, x %>% mutate(SGB = gsub("t__", "",FeatureID), FeatureID = NULL), by = "SGB"))
 
-per_dataset_limma_results.list <- lapply(per_dataset_limma_results.list, function(x) dplyr::right_join(as.data.frame(rowData(Input_filtered.tse)) %>% rownames_to_column("FeatureID"), x, by = "FeatureID"))
+per_dataset_limma_results.list <- lapply(per_dataset_limma_results.list, function(x) dplyr::right_join(as.data.frame(rowData(Input_usableDatasets.tse)) %>% rownames_to_column("FeatureID"), x, by = "FeatureID"))
 
 ```
 
@@ -456,7 +456,7 @@ meta_analysis_results <- sapply(colnames(cohenD.mtx), function(i) runMetaanalysi
   mutate(RE_FDR = p.adjust(RE_P.value, method = "BH"), .after = RE_P.value) %>% 
   arrange(desc(abs(RE_Eff.Size)))
 
-meta_analysis_results <-dplyr::right_join(as.data.frame(rowData(Input_filtered.tse)) %>% rownames_to_column("FeatureID"), meta_analysis_results, by = "FeatureID")
+meta_analysis_results <-dplyr::right_join(as.data.frame(rowData(Input_usableDatasets.tse)) %>% rownames_to_column("FeatureID"), meta_analysis_results, by = "FeatureID")
 
 # save files, also valuable intermediates
 
@@ -516,7 +516,7 @@ cbind(
 ## Microbiome Forest plot of Standardized eff. sizes
 
 ```{r, eval=params$pMD_data_type == "relative_abundance", fig.height=8, fig.width=12}
-legend_table <- Input_filtered.tse %>% 
+legend_table <- Input_usableDatasets.tse %>% 
   colData %>% 
   as_tibble %>% 
   group_by(study_name) %>% 
@@ -524,14 +524,13 @@ legend_table <- Input_filtered.tse %>%
   arrange(desc(N)) %>% 
   mutate(study_label = 1:nrow(.), .before = study_name)
 
-
 ForestPlot <- biobakeryForestPlot(
   meta_input = meta_analysis_results,
   StdEffSizes = cohenD.mtx %>% t,
   studies_Stats.df = legend_table, 
   topN_feat = 20,
   featuresCol = "FeatureID") %>% 
-  enrich_y_taxonomy_label(taxonomy.df = select(meta_analysis_results, Kingdom:FeatureID))
+  enrich_y_taxonomy_label(taxonomy.df = meta_analysis_results[,1:(which(colnames(meta_analysis_results) == "RE_Eff.Size") - 1)])
 
 ForestPlot_with_legend <- ggarrange(ForestPlot, ggtexttable(legend_table, rows = NULL), nrow = 1, widths = c(1, 0.5))
 
@@ -541,7 +540,7 @@ ForestPlot_with_legend
 ```
 
 ```{r, eval=params$pMD_data_type == "pathabundance_unstratified", fig.height=8, fig.width=12}
-legend_table <- Input_filtered.tse %>% 
+legend_table <- Input_usableDatasets.tse %>% 
   colData %>% 
   as_tibble %>% 
   group_by(study_name) %>% 
