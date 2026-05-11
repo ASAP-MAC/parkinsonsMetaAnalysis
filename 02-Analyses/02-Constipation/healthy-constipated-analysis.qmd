@@ -1,0 +1,315 @@
+---
+title: "Constipated microbiome in healthy (non-PD) individuals"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  pseudocount: 1e-8
+  transform: "asin_sqrt"
+  prevalThresh: 0.05
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(magrittr)
+library(tidyverse)
+library(parkinsonsMetagenomicData)
+library(ggtext)
+
+library(ggpubr)
+library(meta)
+
+# for table visualizations
+library(DT)
+library(kableExtra)
+library(openxlsx2)
+
+library(limma)
+library(biobakeryUtils)
+theme_set(theme_bw())
+
+source("../R/lm_standardization_utility_functions.R")
+```
+
+# `AsnicarF_2021`
+
+## Load private metadata and define transit time groups
+
+```{r}
+# This generates a merged version to map to predict metadata
+source("../Data/bluePoo/bluePoo_metadata/bluePoo_harmonize_metadata.R")
+
+studyNames <- c("WallenZD_2022", "AsnicarF_2021")
+bluePoo_vars.chr <- c("bowel_movements_last_7_days", "bristol_stool_score_average_last_3_months", "transit time (days)")
+# load separate asnicar metadata
+bluePoo_meta_raw.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/bluePoo_metadata_ga.tsv") 
+
+# process what we need from this metadata
+AsnicarF_meta_select.df <-  bluePoo_meta_raw.df %>% 
+  transmute(
+    subject_id = sample_alias,
+    `transit time (hours)` = `transit time (days)` * 24,
+    transitTimeCut = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE),
+    transitTimeCutClasses = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE, labels = paste0("C", 1:4)),
+    transitTimeCutClassesDef =  case_when(
+     transitTimeCutClasses == "C1" ~ "Fast",
+     transitTimeCutClasses %in% c("C2","C3") ~ "Normal",
+     transitTimeCutClasses == "C4" ~ "Slow"
+     ) %>% factor(c("Normal", "Fast", "Slow"))
+    )
+AsnicarF_pMD.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/AsnicarF_2021.tsv")
+
+Asnicar_complete.df <- inner_join(AsnicarF_meta_select.df, AsnicarF_pMD.df, by = "subject_id")
+```
+
+```{r}
+rects <- data.frame(
+  xmin = c(0, 14, 38, 58),
+  xmax = c(14, 38, 58, max(Asnicar_complete.df$`transit time (hours)`, na.rm = TRUE)),
+  ymin = 0,
+  ymax =  max(density(Asnicar_complete.df$`transit time (hours)`, na.rm = TRUE)[["y"]]),
+  band = factor(c("C1", "C2", "C3", "C4"))
+)
+
+ggplot(Asnicar_complete.df, aes(x = `transit time (hours)`)) +
+  geom_rect(data = rects,
+            aes(xmin = xmin, xmax = xmax,
+                ymin = ymin, ymax = ymax, fill = band),
+            inherit.aes = FALSE,
+            alpha = 0.8) +
+  geom_density(color = "black", size = 0.6) +
+  scale_fill_brewer(palette = "Blues")
+
+```
+
+```{r}
+kbl(table(Asnicar_complete.df$transitTimeCutClassesDef, Asnicar_complete.df$transitTimeCutClasses,useNA = "ifany")) %>% 
+  kable_styling() %>% 
+  column_spec(1, bold = TRUE)
+```
+
+## Load AsnicarF_2021 pMD microbiome data (publicly available)
+
+```{r}
+# get pMD microbiome profiles 
+basic.tse <- returnSamples(Asnicar_complete.df, data_type = params$pMD_data_type)
+
+Asnicar_complete.tse <- basic.tse %>% 
+  biobakeryUtils::pMD_enhance(data_type = params$pMD_data_type)%>% 
+  replace_colData(Asnicar_complete.df %>% as.data.frame() %>% set_rownames(.$uuid))
+
+# Remove UNCLASSIFIED (MetaPhlAn) |UNMAPPED (HUMAnN) |UNINTEGRATED (HUMAnN) rows
+Asnicar_complete.tse <- Asnicar_complete.tse[!grepl("UN", rownames(Asnicar_complete.tse)),]
+
+assay(Asnicar_complete.tse, "asin_hellinger") <- asin(sqrt(assay(Asnicar_complete.tse, "relabundance")))
+
+# get only available covariate variables
+Asnicar_complete_no_NA_Constipation.tse <- Asnicar_complete.tse[, !is.na(Asnicar_complete.tse@colData$transitTimeCutClassesDef)]
+
+# remove all-0 rows after filtering
+Asnicar_complete_no_NA_Constipation.tse <- Asnicar_complete_no_NA_Constipation.tse[rowSums(assay(Asnicar_complete_no_NA_Constipation.tse, "relabundance")) > 0,]
+
+Asnicar_complete_no_NA_Constipation.tse
+```
+
+## Fit Asnicar Data (`asin(Hellinger)`)
+
+```{r}
+
+slow_vs_normal <- limmaFit_TSE(Asnicar_complete_no_NA_Constipation.tse, assay.type = "asin_hellinger", formula = ~ transitTimeCutClassesDef, coef = "transitTimeCutClassesDefSlow") %>% 
+  arrange(P.Value.adj.BH) %>% 
+  mutate(
+    CohenD = cohen_d_from_lm(
+    n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Slow"), 
+    n2 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Normal"), 
+    t = t_stat),
+    CohenSE = cohen_d_StdErr(
+      n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Slow"), 
+    n2 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Normal"),
+    d = CohenD
+    )
+    )
+
+slow_vs_normal_prev5pct <- slow_vs_normal %>% 
+  filter(N_not_zero/N_zero >= 0.05)
+
+fast_vs_normal <- limmaFit_TSE(Asnicar_complete_no_NA_Constipation.tse, assay.type = "asin_hellinger", formula = ~ transitTimeCutClassesDef, coef = "transitTimeCutClassesDefFast") %>% 
+  arrange(P.Value.adj.BH) %>% 
+  mutate(
+    CohenD = cohen_d_from_lm(
+    n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Fast"), 
+    n2 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Normal"), 
+    t = t_stat),
+    CohenSE = cohen_d_StdErr(
+      n1 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Fast"), 
+    n2 = sum(Asnicar_complete_no_NA_Constipation.tse@colData$transitTimeCutClassesDef == "Normal"),
+    d = CohenD
+    )
+    )
+
+fast_vs_normal_prev5pct <- fast_vs_normal%>% 
+  filter(N_not_zero/N_zero >= 0.05)
+
+inner_join(fast_vs_normal_prev5pct, slow_vs_normal_prev5pct, by = "FeatureID") %>% 
+  ggplot(aes(x = Beta.x, y = Beta.y)) + 
+  geom_point() + 
+  geom_abline(intercept = 0, slope = 1, color = "red") + 
+  geom_abline(intercept = 0, slope = -1, color = "red") + 
+  stat_cor(method = "pearson") + 
+  geom_smooth(method = "lm", formula = y ~ x) + 
+  labs(
+    title = "Effect Size scatterplot",
+    subtitle = "baseline: Normal transit time", 
+    x = "Fast Transit",
+    y = "Slow Transit"
+  )
+```
+
+Associations of fast and slow transit against normal transit return negatively correlated associations, meaning a considerable portion of bugs that are associated in one direction in the slow transit are in the opposite direction in the fast transit and vice versa.
+
+# WallenZD_2022
+
+```{r}
+WallenZD_2022.tse <- sampleMetadata %>% 
+  filter(study_name == "WallenZD_2022") %>% 
+  returnSamples(data_type = params$pMD_data_type) %>% 
+  pMD_enhance(data_type = params$pMD_data_type)
+
+# remove swab samples
+WallenZD_2022_noSwabs.tse <- WallenZD_2022.tse[, WallenZD_2022.tse@colData$uncurated_collection_method != "swab"]
+
+# prune resulting table
+WallenZD_2022_noSwabs.tse <- WallenZD_2022_noSwabs.tse[rowSums(assay(WallenZD_2022_noSwabs.tse)) > 0,]
+
+# calculate asin(sqrt(relabundance))
+assay(WallenZD_2022_noSwabs.tse, "asin_hellinger") <- asin(sqrt(assay(WallenZD_2022_noSwabs.tse, "relabundance")))
+
+table(WallenZD_2022_noSwabs.tse@colData$uncurated_constipation, WallenZD_2022_noSwabs.tse@colData$control, useNA = "ifany")
+```
+
+## Fit Healthy individuals in Wallen data (`asin(Hellinger)`)
+
+```{r}
+WallenZD_2022_noSwabs_noPD.tse <- WallenZD_2022_noSwabs.tse[, WallenZD_2022_noSwabs.tse@colData$control == 'Study Control' &  WallenZD_2022_noSwabs.tse@colData$uncurated_constipation != ""]
+
+WallenZD_2022_noSwabs_noPD.tse <- WallenZD_2022_noSwabs_noPD.tse[rowSums(assay(WallenZD_2022_noSwabs_noPD.tse)) > 0, ]
+
+# recode constipation
+WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation <- factor(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation, levels = c("N", "Y"))
+
+wallen_fit_Controls_constipated_vs_not_constipated <- limmaFit_TSE(WallenZD_2022_noSwabs_noPD.tse, assay.type = "asin_hellinger", formula = ~ uncurated_constipation, coef = "uncurated_constipationY") %>% 
+  arrange(P.Value.adj.BH) %>% 
+  mutate(CohenD = cohen_d_from_lm(
+    n1 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "Y"), 
+    n2 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "N"), 
+    t = t_stat),
+    CohenSE = cohen_d_StdErr(
+      n1 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "Y"),
+      n2 = sum(WallenZD_2022_noSwabs_noPD.tse@colData$uncurated_constipation == "N"),
+      d = CohenD
+    )
+    )
+
+wallen_fit_Controls_constipated_vs_not_constipated_5perc <- wallen_fit_Controls_constipated_vs_not_constipated %>% 
+   filter(N_not_zero/N_zero >= 0.05)
+```
+
+# Write tables
+
+```{r}
+outdir <- sprintf("../results/04-Constipation__%s", params$pMD_data_type)
+dir.create(outdir)
+
+write_xlsx(wallen_fit_Controls_constipated_vs_not_constipated_5perc, file = sprintf("%s/limma_regression_WallenZD_2022_ConstipatedControls.xlsx", outdir))
+
+write_xlsx(
+  list("C4 vs C2C3" = slow_vs_normal_prev5pct, "C1 vs C2C3" = fast_vs_normal_prev5pct),
+  file = sprintf("%s/limma_regression_BluePoo.xlsx", outdir)
+)
+```
+
+# Compare effect sizes of the two associations
+
+```{r}
+merging_cols <- colnames(wallen_fit_Controls_constipated_vs_not_constipated_5perc)[1:(which(colnames(wallen_fit_Controls_constipated_vs_not_constipated_5perc) == "N") - 1)]
+constipation_joined_analyses <- inner_join(wallen_fit_Controls_constipated_vs_not_constipated_5perc, slow_vs_normal_prev5pct, by = merging_cols, suffix = c(".Wallen", ".Asnicar"))
+```
+
+## Top 10 largest deviations
+
+```{r}
+constipation_joined_analyses_sub <- constipation_joined_analyses %>% 
+  mutate(absDiff = abs(Beta.Wallen - Beta.Asnicar)) %>% 
+  arrange(desc(absDiff)) %>% 
+  select(FeatureID, contains(c("CohenD", "CohenSE", "Beta", "SE", "adj.P.Value")), absDiffBetas = absDiff)
+
+constipation_joined_analyses_sub %>% 
+  mutate_if(is.numeric, format, scientif = TRUE, digits = 1) %>% 
+  datatable()
+```
+
+# Overlap with PD meta-analysis
+
+```{r}
+meta_analysis <- read_xlsx(sprintf("../results/03_meta_analysis__%s/02-meta_analysis_%s_PD_only.xlsx", params$pMD_data_type, params$transform), sheet = "Meta-Analysis")
+colnames(meta_analysis) <- gsub("RE_", "", colnames(meta_analysis))
+
+meta_analysis_subset <- meta_analysis %>% 
+  transmute(
+    FeatureID, 
+    Eff.Size,
+    PD_assoc_metaAnalysis = case_when(
+      Eff.Size > 0 & FDR < 0.1 ~ "Increased", 
+      Eff.Size < 0 & FDR < 0.1 ~ "Decreased",
+      FDR >= 0.1 ~ "NS",
+      het_P.value < 0.1 ~ "Heterogeneous"
+    )
+  )
+
+meta_analysis_subset_with_PD_metaAnalysis <- full_join(constipation_joined_analyses_sub, meta_analysis_subset, by = "FeatureID") %>% 
+  relocate(PD_assoc_metaAnalysis, .after = 'FeatureID') %>% 
+  mutate(PD_assoc_metaAnalysis = ifelse(is.na(PD_assoc_metaAnalysis), "Not tested", PD_assoc_metaAnalysis))
+```
+
+```{r, fig.height=6, fig.width=10}
+colors <- c("NS" = "gray", "Increased" = "steelblue3", "Decreased" = "red3", "Not tested" = "white") 
+
+Beta_plot <- meta_analysis_subset_with_PD_metaAnalysis %>% 
+ggplot(aes(Beta.Asnicar, Beta.Wallen, fill = PD_assoc_metaAnalysis)) + 
+  geom_point(pch = 21, size = 2.5)+
+  scale_color_manual(values = colors, aesthetics = c("color", "fill")) + 
+  stat_cor(method = "pearson", mapping = aes(group = 1)) +
+  geom_abline(intercept = 0, slope = 1, color = "red") + 
+  labs(
+    fill = "Meta-Analysis (PD/Control) associations"
+  )
+
+CohenD_plot <- meta_analysis_subset_with_PD_metaAnalysis %>% 
+ggplot(aes(CohenD.Asnicar, CohenD.Wallen, fill = PD_assoc_metaAnalysis)) + 
+  geom_point(pch = 21, size = 2.5)+
+  scale_color_manual(values = colors, aesthetics = c("color", "fill")) + 
+  stat_cor(method = "pearson", mapping = aes(group = 1)) +
+  geom_abline(intercept = 0, slope = 1, color = "red") + 
+  labs(
+    fill = "Meta-Analysis (PD/Control) associations"
+  )
+
+ggarrange(Beta_plot, CohenD_plot, common.legend = TRUE)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

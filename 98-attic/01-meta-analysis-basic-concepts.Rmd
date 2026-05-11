@@ -1,0 +1,1192 @@
+---
+title: "Meta-analysis tutorial"
+author: "Giacomo Antonello"
+date: "`r date()`"
+graphics: yes
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    code_folding: hide
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    thumbnails: false
+    lightbox: true
+    gallery: false
+    use_bookdown: true
+    highlight: haddock
+---
+
+
+```{r knitr chunk preferences, echo=FALSE}
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+
+```{r library setup}
+library(curatedMetagenomicData)
+library(mia)
+library(limma)
+library(DT)
+library(tidyverse)
+library(kableExtra)
+library(meta)
+library(GUniFrac)
+```
+
+# Introduction
+
+These scripts are based on a tutorial by `curatedMetagenomicDataAnalysis` at 
+this [link](https://waldronlab.io/curatedMetagenomicDataAnalyses/articles/Sex_metaanalysis_vignette.html).
+
+```{r metadata query}
+
+#Filter on Age, body_site, study_condition and remove samples missing BMI
+metadata <- curatedMetagenomicData::sampleMetadata %>% 
+  filter(age >= 16 &
+           body_site == "stool" &
+           study_condition == "control" & 
+           is.na(BMI) != TRUE &
+           is.na(gender) != TRUE &
+           days_from_first_collection %in% c(0,NA))
+
+metadata <- metadata %>% 
+  group_by(study_name, subject_id) %>% 
+  filter(row_number() == 1) %>% 
+  ungroup()
+
+  
+#Apply function to grouped selected dataset
+datasets_tokeep <- metadata %>%
+    select(study_name, gender) %>%
+    group_by(study_name) %>% 
+    summarise(n_males = sum(gender=="male"), 
+              n_females= sum(gender=="female"), 
+              N=n()) %>%  
+    mutate(keep = (pmin(n_males,n_females) >= 40) & (n_females/N >= 0.25) & (n_males/N >= 0.25)) %>% 
+    filter(keep == TRUE)
+
+datasets_tokeep <- datasets_tokeep$study_name
+  
+metadata <- metadata %>% 
+    filter(study_name %in% datasets_tokeep)
+```
+
+```{r gather microbiome data}
+
+data_ready <- suppressMessages(
+  returnSamples(metadata, "relative_abundance", rownames = "short")
+)
+
+species_data_ready <- splitByRanks(data_ready, rank = "species")[[1]]
+```
+
+We need to generate functions to compute the meta-analysis a follows
+
+$$
+Weighted~\beta_i (Cohen's~D) = t\cdot \frac{(n_1 + n_2)}{\sqrt{n_1 \cdot n_2}\cdot \sqrt{n_1 + n_2 - 2}}
+$$
+
+  * $n_1~\&~n_2$ are respectively **Number of Controls** and **Number of Cases**
+  
+  * $t$ is the t-statistic of the binary or continuous variable tested 
+  (e.g. sex). NB: multi-level variables need different handling
+
+```{r}
+d_fromlm <- function(n1,n2,t) {
+  d <- (t*(n1+n2)/(sqrt(n1*n2)*sqrt(n1+n2-2)))
+  return(d)
+}
+```
+
+Then we need the variance of the $\beta$ effect sizes, which gets computed as 
+follows:
+
+$$
+Var(\beta) = \frac{n_1+n_2 - 1}{n1 + n_2 - 3}\cdot \frac{4}{n_1+n_2}\cdot(1 + \frac{\beta^2}{8})
+$$
+
+$$
+S.E.(\beta) = \sqrt{Var(\beta)}
+$$
+
+```{r}
+#Compute Std. error of d
+SE_d <- function(n1,n2,d) {
+  se_d <- sqrt(((n1+n2-1)/(n1+n2-3))*((4/(n1+n2))*(1+((d**2)/8))))
+  return(se_d)
+}
+```
+
+
+Another implementation of Cohen's standardized D is a constant value, regardless
+of the sample size imbalance.
+
+$$
+D_2 = t \cdot \sqrt{\frac{2}{df}}
+$$
+
+Looking at the two ways to scale effect sizes, their relationship with sample
+size and case/control imbalance is the following:
+
+```{r}
+N <- c(50, 100, 500, 1000, 2000, 5000, 10000)
+
+names(N) <- paste("N =", N)
+n_cases <- lapply(N, function(ntot) data.frame(
+  N = ntot,
+  Ncases = seq(10, ntot - 10, 10)) |> 
+    mutate( 
+  D1.const = sqrt(2/(N - 1)),
+  D2.const = N/(sqrt((N - Ncases)*Ncases)*sqrt(N - 2))
+  ))
+
+
+bind_rows(n_cases) |> 
+   
+  ggplot(
+    aes(x = Ncases/N, y = D2.const, color = as.factor(N))
+  ) + 
+  geom_line(show.legend = FALSE) + 
+  geom_point() +
+  theme_light() +
+  scale_color_manual(values = ggsci::pal_futurama()(7)) +
+  geom_line(aes(x = Ncases/N, y = D1.const), show.legend = FALSE) +
+  labs(
+    x = "Proportion of cases (%)",
+    y = "Prop. scaled Cohen's D",
+    color = "N Samples"
+  )
+
+```
+
+Notice that the second formulation, as horizontal lines, is significantly lower
+than the first formulation.
+
+**More importantly** the first method scales values so that the lowest scaling 
+factor is where the sample size is lowest and most even. but we need the 
+opposite.
+
+The formula for the standard error follows the same simulated values has a constant component and a variable component.
+
+```{r}
+N <- c(50, 100, 500, 1000, 2000, 5000, 10000)
+names(N) <- paste("N =", N)
+n_cases <- lapply(N, function(ntot) data.frame(
+  N = ntot,
+  Ncases = seq(10, ntot - 10, 10)) |> 
+    mutate( 
+  D2_SE.const = (N - 1)/(N - 3)/2/N
+  ))
+
+
+bind_rows(n_cases) |> 
+   
+  ggplot(
+    aes(x = Ncases/N, y = D2_SE.const, color = as.factor(N))
+  ) + 
+  geom_line(show.legend = FALSE) + 
+  geom_point() +
+  theme_light() +
+  scale_color_manual(values = ggsci::pal_futurama()(7)) +
+  labs(
+    x = "Proportion of cases (%)",
+    y = "Prop. scaled Cohen's D",
+    color = "N Samples"
+  )
+```
+
+To fully simulate its behavior, I will simulate an array
+of effect sizes at N = 500.
+
+```{r}
+betas = seq(-2, 2, 0.05)
+N <- c(50, 100, 500, 1000, 2000, 5000, 10000)
+expand.grid(betas, N) |> 
+  rename(
+    Beta = Var1,
+    N = Var2
+  ) |> 
+mutate(
+  cohen_SE = sqrt((N - 1)/(N - 3)* 4/(N) * (1 + Beta^2/8))
+  ) |> 
+  
+  ggplot(
+    aes(
+      x = Beta, 
+      y = cohen_SE,
+      color = as.factor(N)
+    )
+  ) + 
+  geom_line(show.legend = FALSE) +
+  geom_point() + 
+  scale_color_manual(values = ggsci::pal_futurama()(7)) +
+  theme_light() +
+  labs(
+    x = "Beta values",
+    y = "Cohen's D Std. Err.",
+    color = "N Samples"
+  )
+```
+
+Again, we see that the lowest values of Std. Errors are reached with larger 
+sample sizes, which is ok, but with lowest Beta values. This is does not sound 
+correct, because the uncertainty of Cohen's D should increase with decreasing 
+Beta values.
+
+# Meta-analysis on sex using `cMD Analysis` tutorial
+
+```{r}
+method1_t0 <- Sys.time()
+```
+
+
+```{r define asin_trans}
+asin_trans <- function(rel_ab){
+  return(asin(sqrt(rel_ab/100)))
+}
+```
+
+```{r define computeStandardizedMeanDifference}
+#Function that takes in input a tse object and for each dataset computes a linear model for each linear species
+
+computeStandardizedMeanDifference <- function(tse_object){
+  
+  tse_datasets <- unique(colData(tse_object)$study_name)
+  
+  #Build linear models for all species of each dataset present in tse_object
+  singleDatasetAnalyze <- function(dataset) {
+    single_dataset_tse <- tse_object[,tse_object$study_name == dataset]
+    
+    #Select vectors of relative abundances and metadata
+    exprs_df <- asin_trans(
+     assay(single_dataset_tse))
+    
+    exprs_df <- exprs_df[rowSums(is.na(exprs_df)) != ncol(exprs_df), ]
+
+    species <- rownames(exprs_df)
+    
+    age <- colData(single_dataset_tse)$age
+    bmi <- colData(single_dataset_tse)$BMI
+    gender <- as.factor(colData(single_dataset_tse)$gender)
+    
+    compute_lm <- function(exprs_row){
+      lm_res <-  broom::tidy(lm(exprs_row ~ bmi + age + gender))
+      lm_res <- column_to_rownames(lm_res, var = "term")
+      res <- lm_res["gendermale",c("statistic","p.value"),drop=TRUE]
+      return(res)
+    }
+
+    lmResults <- t(
+      sapply(species, 
+            FUN = function(x) {
+              species_relabs <- exprs_df[x,] 
+              res <- compute_lm(species_relabs)
+              return(res)
+                        }))
+
+    n_gender <- c(table(gender)["male"][[1]],
+                  table(gender)["female"][[1]])
+    
+    #Compute effect size and respective standard error for each species
+    #in single dataset
+    
+    d_List <- as.vector(sapply(lmResults[,"statistic"], function(x) d_fromlm(n_gender[1],
+                                                                   n_gender[2], 
+                                                                   x)))
+    
+    SE_d_List <- as.vector(sapply(d_List, function(x) SE_d(n_gender[1],
+                                                           n_gender[2],
+                                                           x )))
+    
+    #Wald test for relative abundance of species between males and females
+    #(default of lm() function)
+    wald_list <- as.double(lmResults[,"p.value", drop=TRUE])
+    
+    #FDR-correction with Benjamini-Hochberg method for Wald p-values
+    q_values <- p.adjust(wald_list,method = "BH")
+    
+    
+    final_df <- as.matrix(cbind(d_List,
+                                SE_d_List,
+                                wald_list,
+                                q_values))
+    
+    #Finalize results for the single dataset
+    colnames(final_df) <- c(paste0(dataset,"_CohenD"),
+                            paste0(dataset,"_SE_d"),
+                            paste0(dataset,"_pvalue"),
+                            paste0(dataset,"_Qvalue"))
+    
+    rownames(final_df) <- species
+
+    return(final_df)
+  
+  }
+  
+    linear_models <- lapply(tse_datasets, singleDatasetAnalyze)
+    names(linear_models) <- tse_datasets
+    
+    return(linear_models)
+
+}
+
+```
+
+```{r define runMetaanalysis}
+
+runMetaanalysis <- function(d_vector, SE_d_vector) {
+  a <- meta::metagen(TE=d_vector,
+                     seTE=SE_d_vector,
+                     studlab=rownames(d_vector),
+                     method.tau="PM",          
+                     sm="SMD")
+  
+  final_vector <-c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2)
+  
+  names(final_vector) <- c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2")
+  
+  return(final_vector)
+}
+
+```
+
+```{r}
+#Computing Standardized Mean Differences (d), and the respective standard error
+#(SE_D) of species relative abundances between males and female for all datasets
+#Retrieve queried samples
+
+#Separating Asnicar USA from Asnicar GBR
+# colData(species_data_ready)[which(colData(species_data_ready)$study_name == "AsnicarF_2021" & colData(species_data_ready)$country == "USA"),]$study_name <- "USA_asnicarF_2021"
+
+SDM <- computeStandardizedMeanDifference(species_data_ready)  
+
+#Merging outputs of all datasets so to have a single dataframe with all the 
+#species found across the cohorts
+final_df <- Reduce(function(x, y) merge(x, y, all=TRUE), 
+                   lapply(SDM, function(x) data.frame(x, rn = row.names(x))))
+
+final_df <- final_df  %>% column_to_rownames(var="rn")
+
+#Subsetting from SDM dataframe only the columns we actually need to perform 
+#the meta-analysis into two separated dataframes (one for the standardized mean
+#differences (d), and one for the respective standard error (SE_D)
+
+d_matrix <- final_df %>% 
+  select(contains("CohenD"))
+d_matrix <- t(d_matrix)
+se_matrix <- final_df %>% 
+  select(contains("SE_d"))
+se_matrix <- t(se_matrix)
+
+#Run meta-analyses
+meta_analysis_regression <- t(mapply(function(x,y) {runMetaanalysis(x,y)},
+                                                   as.data.frame(d_matrix),
+                                                   as.data.frame(se_matrix)))
+
+final_df <- cbind(final_df, meta_analysis_regression)
+
+#Correct p-values of random effect with FDR Benjamini-Hochberg
+final_df$FDR_Qvalue <- p.adjust(final_df$`p-value`,method = "BH")
+```
+
+```{r table results of first method}
+filter_sort <- function(df_to_sort, na_filter){
+  cols_cohenD <- grep("CohenD|Correlation",colnames(df_to_sort))
+  cols_cohenD <- cols_cohenD[which(cols_cohenD >= 9)]
+  df_to_sort$na_n <- apply(df_to_sort[,cols_cohenD], MARGIN = 1, FUN = function(x){
+     na_n <- sum(!is.na(x))
+   })
+  
+  df_to_sort <- df_to_sort[which(df_to_sort$na_n >= na_filter),]
+  df_to_sort$RE_correlation_ABS <- abs(as.double(df_to_sort[,1]))
+  df_to_sort$lower_than_fdr <- ifelse(df_to_sort$FDR_Qvalue < 0.2, 1, 0)
+  
+  #Split the dataset
+  df_to_sort_lower_fdr <- df_to_sort[which(df_to_sort$lower_than_fdr == 1),]
+  df_to_sort_upper_fdr <- df_to_sort[which(df_to_sort$lower_than_fdr == 0),]
+
+  #Sort according to ABS.re
+  df_to_sort_lower_fdr <- df_to_sort_lower_fdr %>% 
+    arrange(-RE_correlation_ABS)
+  
+  df_to_sort_upper_fdr <- df_to_sort_upper_fdr %>% 
+    arrange( -RE_correlation_ABS)
+  
+  df_to_sort <- rbind(df_to_sort_lower_fdr, df_to_sort_upper_fdr)
+  df_to_sort <- df_to_sort %>% 
+    select(-c(na_n, lower_than_fdr,RE_correlation_ABS))
+  
+  return(df_to_sort)
+}
+
+final_df <- final_df %>% dplyr::select(RE:FDR_Qvalue,everything())
+final_df <- filter_sort(final_df, 4)
+```
+
+```{r}
+method1_t1 <- Sys.time()
+```
+
+```{r}
+datatable(final_df)
+```
+
+## Some considerations on modeling estimations (before Meta analyses)
+
+  1. Transformation assumes that all columns (samples) of the assay sum to 100, 
+  but it is not always the case
+  2. `lm` uses a crude estimation method which is likely biased in cases like:
+    a. small effect sizes
+    b. sparse data 
+    c. presence of several outliers 
+  All of these are caused by the zero-inflated microbiome distributions, as well 
+  as least squares estimations of $\beta$ values.
+
+First, I need to prove that we can rewrite the transformation function as 
+vectorial. 
+
+```{r}
+dataset <- "AsnicarF_2021"
+single_dataset_tse <- species_data_ready[,species_data_ready$study_name == dataset]
+
+# create covariates vectors
+age <- single_dataset_tse@colData$age
+bmi <- single_dataset_tse@colData$BMI
+gender <- single_dataset_tse@colData$gender
+```
+
+```{r}
+matrices_together.list <- list(
+  original = asin_trans(
+assay(single_dataset_tse)),
+
+  original_ApplyRewritten = asin(sqrt(apply(
+assay(single_dataset_tse), 2, function(x) x/100))),
+
+  original_DenominCorrected = asin(sqrt(apply(
+assay(single_dataset_tse), 2, function(x) x/sum(x))))
+)
+
+vec_identical <- apply(combn(1:length(matrices_together.list),2), 2, function(x) 
+  identical(matrices_together.list[[x[1]]],matrices_together.list[[x[2]]])
+  )
+mtx_absdiff <- apply(combn(1:3,2), 2, function(x) 
+  range(abs(matrices_together.list[[x[1]]] - matrices_together.list[[x[2]]]))
+  ) |> t()
+
+cbind.data.frame(
+  matrix(names(matrices_together.list)[combn(1:3,2)], ncol = 2, nrow = 3, byrow = T), 
+  vec_identical, 
+  mtx_absdiff) |> 
+  set_names(c("Matrix 1", "Matrix 2", "Identical", "MinAbsDiff", "MaxAbsDiff")) |> 
+  kbl()
+
+```
+
+Now we know that the input matrix is identical with the rewritten function, 
+I will apply my modified method even in the original data
+
+```{r original lm estimations}
+
+lm_method.list <- matrices_together.list[2:3] |> 
+  lapply(function(expr.mtx)
+    sapply(rownames(expr.mtx), 
+                       function(species) 
+                         broom::tidy(lm(expr.mtx[species,] ~ age + bmi + gender)),
+                       USE.NAMES = TRUE, simplify = FALSE) |> 
+  lapply(filter, grepl("gender", term)) |> 
+  # lapply(select, statistic, p.value) |> 
+  bind_rows(.id = "taxon") |> 
+  column_to_rownames("taxon")
+    )
+
+
+limma_method_raw.list <- matrices_together.list[2:3] |>
+  lapply(function(expr.mtx)
+    lmFit(
+      object = expr.mtx,
+      design = model.matrix(
+        as.formula("~ age + BMI + gender"),
+        data = data.frame(colData(single_dataset_tse)))
+    ) |>
+      eBayes())
+
+limma_method_clean.list <- lapply(
+  limma_method_raw.list, 
+  function(limma.out)
+    topTable(
+      limma.out,
+      coef = paste0("gender", "male"),
+      confint = T,
+      number = Inf,
+      adjust.method = "BH"
+    ) |>
+      mutate(
+        df = limma.out[["df.residual"]],
+        logFC.SE = abs((CI.R - logFC)/t),
+        CI.R = NULL,
+        CI.L = NULL
+        ) |> 
+  relocate(
+    logFC.SE, .after = logFC
+  )
+  )
+
+
+stats_as_matrix <- append(
+  lm_method.list |>
+       lapply(select, -term),
+  lapply(limma_method_clean.list, select, contains("log"), t, P.Value)
+     ) |> 
+  # make sure all features are ordered in the same way
+  lapply(function(x) x[rownames(lm_method.list$original_ApplyRewritten),]) |>
+  reduce(cbind) %>%
+  magrittr::set_colnames(gsub(".1", "_correctTransf", make.unique(colnames(.),), fixed = TRUE)) |> 
+  as.matrix()
+
+# remove rows (taxa) with failed (NA) or infinite items
+tmp <- stats_as_matrix[rowSums(!is.finite(stats_as_matrix)) == 0,] |> 
+  t() |> 
+  dist() |> 
+  hclust(method = "centroid" )
+
+
+datatable(stats_as_matrix[,tmp$labels[tmp$order]][,1:4], caption = "t-statistic")
+
+datatable(stats_as_matrix[,tmp$labels[tmp$order]][,5:8], caption = "Std.Err. (Beta)")
+
+datatable(stats_as_matrix[,tmp$labels[tmp$order]][,c(9:10,15:16)], caption = "P-Value")
+
+datatable(stats_as_matrix[,tmp$labels[tmp$order]][,11:14], caption = "Beta")
+```
+
+Interestingly, all values differ, from the 4th decimal on, whether it be the 
+transformation or the statistical method. More importantly, the strongest 
+differentiation factor is the transformation method. 
+
+## Effect of transformation and modeling method on meta-analysis results
+
+I will perform the meta-analyses using these 4 variables and seeing the 
+resulting differences.
+
+### lm meta-analyses
+
+```{r}
+#------ VARIABLES TO TEST ------------
+var_of_interest <- "gender"
+covars <- c("age", "BMI")
+#-------------------------------------
+```
+
+#### samples divided by 100
+
+```{r}
+data_transf_split_Div100 <- splitOn(species_data_ready, "study_name") |> 
+  lapply(
+    function(tss.data) {
+      assay(tss.data, "asin_hellinger") <- apply(assay(tss.data, "relative_abundance"), 2, function(x) asin(sqrt(x/100)))
+  # return the list of TSE. If skipped, matrices are returned
+  return(tss.data)
+    }
+  )
+
+lm_results_all_datasets_Div100.list <- lapply(
+  data_transf_split_Div100,
+  function(tss.data) {
+    
+    taxa <- rownames(tss.data)
+    
+    dataIN <- cbind.data.frame(
+      t(assay(tss.data, "asin_hellinger")) %>% 
+        magrittr::set_colnames(make.names(colnames(.))),
+      as.data.frame(colData(tss.data))
+      )
+    
+    formulas.list <- sapply(taxa, function(species) 
+      as.formula(paste(make.names(species), " ~ ", paste(c(var_of_interest, covars), collapse = " + "))), 
+      USE.NAMES = TRUE, simplify = FALSE)
+    
+    lm.list <- lapply(
+      formulas.list,
+      function(f.la)
+        broom::tidy(
+          lm(
+            f.la,
+            data = dataIN
+            )
+          )
+    )
+    return(lm.list)
+    }
+  )
+
+
+# step 2 - extract t stats
+tvalues <- lapply(lm_results_all_datasets_Div100.list, function(dataset)
+  sapply(dataset, function(x)
+    x[["statistic"]][x$term == "gendermale"])
+  )
+
+# step 3 - extract number of cases and controls
+n_per_level_per_dataset <- data_transf_split_Div100 |> 
+  sapply(
+    function(x) table(colData(x)$gender),
+    simplify = TRUE
+    ) |> 
+  t()
+
+
+# step 4 - calculated D score 
+dvalues_per_taxon <- sapply(names(lm_results_all_datasets_Div100.list), function(dataset_name) d_fromlm(n1 = n_per_level_per_dataset[dataset_name,1], n2 = n_per_level_per_dataset[dataset_name,2], t = tvalues[[dataset_name]]),
+                            USE.NAMES = TRUE,
+                            simplify = FALSE) |>
+  lapply(as.list) |>
+  purrr::transpose()
+
+dvalues_per_taxon_noNULL <- lapply(dvalues_per_taxon, function(ds.df){
+  ds.df[sapply(ds.df, is.na)] <- 0
+  return(ds.df)
+} )
+
+# step 5 - calculate D's standard error
+StdErr_per_taxon_noNULL <- lapply(dvalues_per_taxon_noNULL, function(x) SE_d(n1 = n_per_level_per_dataset[names(x),1], n2 = n_per_level_per_dataset[names(x),2], d = unlist(x)))
+
+```
+
+```{r}
+meta_analysis_lm.metagen <- sapply(names(dvalues_per_taxon_noNULL), function(taxon) meta::metagen(TE=unlist(dvalues_per_taxon_noNULL[[taxon]]),
+                     seTE = unlist(StdErr_per_taxon_noNULL[[taxon]]),
+                     studlab = names(dvalues_per_taxon_noNULL$`Abiotrophia defectiva`),
+                     method.tau = "PM",          
+                     sm = "SMD"), 
+       USE.NAMES = TRUE,
+       simplify = FALSE)
+
+meta_analysis_lm_Div100.df <- sapply(meta_analysis_lm.metagen, function(a) c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2) |> 
+  set_names(c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2"))) |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate_all(.funs = function(x) tryCatch(as.numeric(x), warning = function(w) return(x))) |> 
+  #adjust p-values
+  mutate(FDR_Qvalue = p.adjust(`p-value`, method = "BH"))
+
+```
+
+#### samples divided by sum()
+
+```{r}
+data_transf_split_DivSum <- splitOn(species_data_ready, "study_name") |> 
+  lapply(
+    function(tss.data) {
+      assay(tss.data, "asin_hellinger") <- apply(assay(tss.data, "relative_abundance"), 2, function(x) asin(sqrt(x/sum(x))))
+  # return the list of TSE. If skipped, matrices are returned
+  return(tss.data)
+    }
+  )
+
+lm_results_all_datasets_DivSum.list <- lapply(
+  data_transf_split_DivSum,
+  function(tss.data) {
+    
+    taxa <- rownames(tss.data)
+    
+    dataIN <- cbind.data.frame(
+      t(assay(tss.data, "asin_hellinger")) %>% 
+        magrittr::set_colnames(make.names(colnames(.))),
+      as.data.frame(colData(tss.data))
+      )
+    
+    formulas.list <- sapply(taxa, function(species) 
+      as.formula(paste(make.names(species), " ~ ", paste(c(var_of_interest, covars), collapse = " + "))), 
+      USE.NAMES = TRUE, simplify = FALSE)
+    
+    lm.list <- lapply(
+      formulas.list,
+      function(f.la)
+        broom::tidy(
+          lm(
+            f.la,
+            data = dataIN
+            )
+          )
+    )
+    return(lm.list)
+    }
+  )
+
+
+# step 2 - extract t stats
+tvalues <- lapply(lm_results_all_datasets_DivSum.list, function(dataset)
+  sapply(dataset, function(x)
+    x[["statistic"]][x$term == "gendermale"])
+  )
+
+# step 3 - extract number of cases and controls
+n_per_level_per_dataset <- data_transf_split_DivSum |> 
+  sapply(
+    function(x) table(colData(x)$gender),
+    simplify = TRUE
+    ) |> 
+  t()
+
+
+# step 4 - calculated D score 
+dvalues_per_taxon <- sapply(names(lm_results_all_datasets_DivSum.list), function(dataset_name) d_fromlm(n1 = n_per_level_per_dataset[dataset_name,1], n2 = n_per_level_per_dataset[dataset_name,2], t = tvalues[[dataset_name]]),
+                            USE.NAMES = TRUE,
+                            simplify = FALSE) |>
+  lapply(as.list) |>
+  purrr::transpose()
+
+dvalues_per_taxon_noNULL <- lapply(dvalues_per_taxon, function(ds.df){
+  ds.df[sapply(ds.df, is.na)] <- 0
+  return(ds.df)
+} )
+
+# step 5 - calculate D's standard error
+StdErr_per_taxon_noNULL <- lapply(dvalues_per_taxon_noNULL, function(x) SE_d(n1 = n_per_level_per_dataset[names(x),1], n2 = n_per_level_per_dataset[names(x),2], d = unlist(x)))
+
+```
+
+```{r}
+meta_analysis_lm.metagen <- sapply(names(dvalues_per_taxon_noNULL), function(taxon) meta::metagen(TE=unlist(dvalues_per_taxon_noNULL[[taxon]]),
+                     seTE = unlist(StdErr_per_taxon_noNULL[[taxon]]),
+                     studlab = names(dvalues_per_taxon_noNULL$`Abiotrophia defectiva`),
+                     method.tau = "PM",          
+                     sm = "SMD"), 
+       USE.NAMES = TRUE,
+       simplify = FALSE)
+
+meta_analysis_lm_DivSum.df <- sapply(meta_analysis_lm.metagen, function(a) c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2) |> 
+  set_names(c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2"))) |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate_all(.funs = function(x) tryCatch(as.numeric(x), warning = function(w) return(x))) |> 
+  #adjust p-values
+  mutate(FDR_Qvalue = p.adjust(`p-value`, method = "BH"))
+
+```
+
+### limma meta-analyses
+
+#### samples divided by 100
+
+```{r meta-analysis setup}
+#------ VARIABLES TO TEST ------------
+var_of_interest <- "gender"
+covars <- c("age", "BMI")
+#-------------------------------------
+```
+
+```{r}
+data_transf_split_Div100 <- splitOn(species_data_ready, "study_name") |> 
+  lapply(
+    function(tss.data) {
+      assay(tss.data, "asin_hellinger") <- apply(assay(tss.data, "relative_abundance"), 2, function(x) asin(sqrt(x/100)))
+  # return the list of TSE. If skipped, matrices are returned
+  return(tss.data)
+    }
+  )
+
+
+limma_results_Div100_raw.list <- lapply(data_transf_split_Div100, 
+         function(tse.x)
+    lmFit(
+      object = assay(tse.x, "asin_hellinger"),
+      design = model.matrix(
+        as.formula("~ age + BMI + gender"),
+        data = data.frame(colData(tse.x)))
+    ) |>
+      eBayes())
+
+limma_results_Div100_clean.list <- lapply(
+  limma_results_Div100_raw.list, 
+  function(limma.out)
+    topTable(
+      limma.out,
+      coef = paste0("gender", "male"),
+      confint = T,
+      number = Inf,
+      adjust.method = "BH"
+    ) |>
+      mutate(
+        df = limma.out[["df.residual"]],
+        logFC.SE = abs((CI.R - logFC)/t),
+        CI.R = NULL,
+        CI.L = NULL
+        ) |> 
+  relocate(
+    logFC.SE, .after = logFC
+  )
+  )
+
+# step 2 - extract number of cases and controls
+n_per_level_per_dataset <- data_transf_split_Div100 |> 
+  sapply(
+    function(x) table(colData(x)$gender),
+    simplify = TRUE
+    ) |> 
+  t()
+```
+
+```{r}
+# step 3 - extract Cohen D values and standard errors
+dvalues_per_taxon <- sapply(names(limma_results_Div100_clean.list), function(dataset_name) d_fromlm(n1 = n_per_level_per_dataset[dataset_name,1], n2 = n_per_level_per_dataset[dataset_name,2], t = limma_results_Div100_clean.list[[dataset_name]]$t |> set_names(rownames(limma_results_Div100_clean.list[[dataset_name]]))),
+                            USE.NAMES = TRUE,
+                            simplify = FALSE) |>
+  lapply(as.list) |>
+  purrr::transpose()
+
+
+dvalues_per_taxon_noNULL <- lapply(dvalues_per_taxon, function(ds.df){
+  ds.df[sapply(ds.df, is.na)] <- 0
+  return(ds.df)
+} )
+
+StdErr_per_taxon_noNULL <- lapply(dvalues_per_taxon_noNULL, function(x) SE_d(n1 = n_per_level_per_dataset[names(x),1], n2 = n_per_level_per_dataset[names(x),2], d = unlist(x)))
+
+```
+
+```{r}
+meta_analysis_lm.metagen <- sapply(names(dvalues_per_taxon_noNULL), function(taxon) meta::metagen(TE=unlist(dvalues_per_taxon_noNULL[[taxon]]),
+                     seTE = unlist(StdErr_per_taxon_noNULL[[taxon]]),
+                     studlab = names(dvalues_per_taxon_noNULL$`Bilophila wadsworthia`),
+                     method.tau = "PM",          
+                     sm = "SMD"), 
+       USE.NAMES = TRUE,
+       simplify = FALSE)
+
+meta_analysis_limma_Div100.df <- sapply(meta_analysis_lm.metagen, function(a) c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2) |> 
+  set_names(c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2"))) |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate_all(.funs = function(x) tryCatch(as.numeric(x), warning = function(w) return(x))) |> 
+  #adjust p-values
+  mutate(FDR_Qvalue = p.adjust(`p-value`, method = "BH"))
+
+```
+
+#### samples divided by sum()
+
+```{r}
+data_transf_split_DivSum <- splitOn(species_data_ready, "study_name") |> 
+  lapply(
+    function(tss.data) {
+      assay(tss.data, "asin_hellinger") <- apply(assay(tss.data, "relative_abundance"), 2, function(x) asin(sqrt(x/sum(x))))
+  # return the list of TSE. If skipped, matrices are returned
+  return(tss.data)
+    }
+  )
+
+
+limma_results_DivSum_raw.list <- lapply(data_transf_split_DivSum, 
+         function(tse.x)
+    lmFit(
+      object = assay(tse.x, "asin_hellinger"),
+      design = model.matrix(
+        as.formula("~ age + BMI + gender"),
+        data = data.frame(colData(tse.x)))
+    ) |>
+      eBayes())
+
+limma_results_DivSum_clean.list <- lapply(
+  limma_results_DivSum_raw.list, 
+  function(limma.out)
+    topTable(
+      limma.out,
+      coef = paste0("gender", "male"),
+      confint = T,
+      number = Inf,
+      adjust.method = "BH"
+    ) |>
+      mutate(
+        df = limma.out[["df.residual"]],
+        logFC.SE = abs((CI.R - logFC)/t),
+        CI.R = NULL,
+        CI.L = NULL
+        ) |> 
+  relocate(
+    logFC.SE, .after = logFC
+  )
+  )
+
+# step 2 - extract number of cases and controls
+n_per_level_per_dataset <- data_transf_split_DivSum |> 
+  sapply(
+    function(x) table(colData(x)$gender),
+    simplify = TRUE
+    ) |> 
+  t()
+```
+
+```{r}
+# step 3 - extract Cohen D values and standard errors
+dvalues_per_taxon <- sapply(names(limma_results_DivSum_clean.list), function(dataset_name) d_fromlm(n1 = n_per_level_per_dataset[dataset_name,1], n2 = n_per_level_per_dataset[dataset_name,2], t = limma_results_DivSum_clean.list[[dataset_name]]$t |> set_names(rownames(limma_results_DivSum_clean.list[[dataset_name]]))),
+                            USE.NAMES = TRUE,
+                            simplify = FALSE) |>
+  lapply(as.list) |>
+  purrr::transpose()
+
+
+dvalues_per_taxon_noNULL <- lapply(dvalues_per_taxon, function(ds.df){
+  ds.df[sapply(ds.df, is.na)] <- 0
+  return(ds.df)
+} )
+
+StdErr_per_taxon_noNULL <- lapply(dvalues_per_taxon_noNULL, function(x) SE_d(n1 = n_per_level_per_dataset[names(x),1], n2 = n_per_level_per_dataset[names(x),2], d = unlist(x)))
+
+```
+
+```{r}
+meta_analysis_lm.metagen <- sapply(names(dvalues_per_taxon_noNULL), function(taxon) meta::metagen(TE=unlist(dvalues_per_taxon_noNULL[[taxon]]),
+                     seTE = unlist(StdErr_per_taxon_noNULL[[taxon]]),
+                     studlab = names(dvalues_per_taxon_noNULL$`Bilophila wadsworthia`),
+                     method.tau = "PM",          
+                     sm = "SMD"), 
+       USE.NAMES = TRUE,
+       simplify = FALSE)
+
+meta_analysis_limma_DivSum.df <- sapply(meta_analysis_lm.metagen, function(a) c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2) |> 
+  set_names(c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2"))) |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate_all(.funs = function(x) tryCatch(as.numeric(x), warning = function(w) return(x))) |> 
+  #adjust p-values
+  mutate(FDR_Qvalue = p.adjust(`p-value`, method = "BH"))
+
+```
+
+### pairwise scatterplots of RE estimates of the 4 meta-analyses
+
+```{r}
+
+list_meta_analyses <- list(
+  lm_Div100 = meta_analysis_lm_Div100.df,
+  lm_DivSum = meta_analysis_lm_DivSum.df,
+  limma_Div100 = meta_analysis_limma_Div100.df[rownames(meta_analysis_lm_DivSum.df),],
+  limma_DivSum = meta_analysis_limma_DivSum.df[rownames(meta_analysis_lm_DivSum.df),])
+  
+lapply(list_meta_analyses, "[[", "RE") |> 
+  bind_cols(.name_repair = "unique") |> 
+  GGally::ggpairs(progress = FALSE)
+```
+
+# ZicoSeq, LinDA, MaAsLin3, ... may be better alternative to estimate eff. sizes
+
+```{r zicoseq library and wrangling functions}
+library(GUniFrac)
+
+format_zicoseq_output <- function(zico.out){
+  # get coefficient of group_variable
+  beta <- zico.out$coef.list[[1]][grep(zico.out$grp.name, rownames(zico.out$coef.list[[1]])),]
+  beta_name <- paste0("beta_", grep(zico.out$grp.name, rownames(zico.out$coef.list[[1]]), value = TRUE))
+  # get p-values
+  pvals <- cbind(zico.out$p.raw,zico.out$p.adj.fdr, zico.out$p.adj.fwer)
+  rownames(pvals) <- names(zico.out$p.raw)
+  # get Rsquared, RSS and F0 stat
+  R2 <- zico.out$R2
+  RSS <- zico.out$RSS
+  F0 <- zico.out$F0
+  
+  results.mtx <- cbind(beta, R2, RSS, F0, pvals)
+  colnames(results.mtx) <- c(beta_name, "R2", "RSS", "F0", "p.value_raw", "q.value_FDR", "q.value_FWE")
+  results.df <- data.frame(
+    "taxon" = rownames(results.mtx),
+    results.mtx
+  )
+  
+  results.df <- results.df[order(results.df$q.value_FDR),]
+  return(results.df)
+}
+```
+
+```{r}
+#' prepare data accordingly: zicoseq wants proportions adding up to 1 and 
+#' pre-pruned features (rowSums > 0)
+
+data_transf_split <- lapply(data_transf_split_DivSum, 
+                            transformAssay, 
+                            assay.type = "relative_abundance", 
+                            method =  "relabundance")
+
+# make sure the contrast is females/males, like the other ones
+
+data_transf_split <- lapply(data_transf_split, function(x) {
+  colData(x)$gender <- factor(colData(x)$gender, levels = c("female","male"))
+  return(x)
+  }
+  ) 
+
+data_transf_split_pruned <- lapply(data_transf_split, 
+                                   function(x.tss) 
+                                     x.tss[rowSums(assay(x.tss, "relabundance")) > 0,])
+
+diffAbund_zicoseq <- parallel::mclapply(data_transf_split_pruned, function(x.tss)
+  tryCatch(
+  ZicoSeq(
+  meta.dat = as.data.frame(colData(x.tss)),
+  feature.dat = assay(x.tss, "relabundance"),
+  grp.name  = "gender",
+  adj.name = c("age","BMI"),
+  feature.dat.type = "proportion",
+  # Filter to remove rare taxa
+  prev.filter = 0.05,
+  mean.abund.filter = 0,
+  max.abund.filter = 0,
+  min.prop = 0,
+  # Winsorization to replace outliers
+  is.winsor = TRUE,
+  outlier.pct = 0.03,
+  winsor.end = 'top',
+  # Posterior sampling
+  is.post.sample = TRUE,
+  post.sample.no = 25,
+  # Use the square-root transformation
+  link.func = list(function (x)
+    sqrt(x)),
+  stats.combine.func = max,
+  # Permutation-based multiple testing correction
+  perm.no = 999,
+  strata = NULL,
+  # Reference-based multiple stage normalization
+  ref.pct = 0.5,
+  stage.no = 6,
+  excl.pct = 0.2,
+  # Family-wise error rate control
+  is.fwer = TRUE,
+  verbose = FALSE,
+  return.feature.dat = FALSE
+  ),
+    error = function(e)
+      return(NULL)
+    ),
+  mc.cores=12
+   ) |> 
+   # give names to the list (dataset names)
+   set_names(names(data_transf_split))
+
+
+diffAbund_zicoseq_formatted.list <- lapply(diffAbund_zicoseq, format_zicoseq_output)
+
+
+features_for_metaAnalysis <- lapply(diffAbund_zicoseq_formatted.list, "[[", "taxon") |> 
+  reduce(intersect)
+
+print(paste("taxa in common among studies:", length(features_for_metaAnalysis)))
+
+```
+
+The lower number of features is due to data missingness (rows of 0) in the 
+features' tables, which `ZicoSeq` does not want, while `lm`/`limma` are ok with.
+Still, a meta-analysis across studies for these features is possible.
+
+```{r}
+n_per_level_per_dataset <- data_transf_split_pruned |> 
+  sapply(function(x) table(colData(x)$gender), simplify = TRUE) |> 
+  t()
+
+results_only_taxa_in_common <- lapply(diffAbund_zicoseq_formatted.list, filter, taxon %in% features_for_metaAnalysis)
+
+dvalues_per_taxon <- sapply(names(results_only_taxa_in_common), function(dataset_name) d_fromlm(n1 = n_per_level_per_dataset[dataset_name,1], n2 = n_per_level_per_dataset[dataset_name,2], t = results_only_taxa_in_common[[dataset_name]]$F0 |> set_names(rownames(results_only_taxa_in_common[[dataset_name]]))), 
+                            USE.NAMES = TRUE, 
+                            simplify = FALSE) |> 
+  lapply(as.list) |> 
+  purrr::transpose()
+
+StdErr_per_taxon <- lapply(dvalues_per_taxon, function(x) SE_d(n1 = n_per_level_per_dataset[names(x),1], n2 = n_per_level_per_dataset[names(x),2], d = unlist(x)))
+
+```
+
+```{r}
+
+tmp <- sapply(names(StdErr_per_taxon), function(taxon) meta::metagen(TE=unlist(dvalues_per_taxon[[taxon]]),
+                     seTE = unlist(StdErr_per_taxon[[taxon]]),
+                     studlab = dvalues_per_taxon$`Bilophila wadsworthia` |> names(),
+                     method.tau = "PM",          
+                     sm = "SMD"), 
+       USE.NAMES = TRUE,
+       simplify = FALSE)
+
+tmp3 <- sapply(tmp, function(a) c(a$TE.random,
+                   a$seTE.random,
+                   paste(a$lower.random,a$upper.random,sep=";"),
+                   a$zval.random,
+                   a$pval.random,
+                   a$tau2,
+                   a$I2) |> 
+  set_names(c("RE","SE_RE","CI_RE","Zscore","p-value","tau2","I^2"))) |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate_all(.funs = function(x) tryCatch(as.numeric(x), warning = function(w) return(x))) |> 
+  #adjust p-values
+  mutate(FDR_Qvalue = p.adjust(`p-value`, method = "BH"))
+
+```
+
+```{r}
+arrange(tmp3, `p-value`) |> 
+  mutate_if(is.numeric, round, 5) |> 
+  datatable()
+``` 
+
+# Open questions
+  
+  1. Why not analyzing data all together and adjust or block for dataset?
+  2. Why not use more microbiome tailored methods?
+  3. Should we divide by 100 or by the actual total sum or relative abundances
+  of features per sample?
+  
+# Real life example: Alice Bassetto's parkinson datasets
+
+# Step 1 - Data loading and curation
+
+```{r, eval=FALSE}
+input_dir <- "~/Documents/PostDoc/curatedMetagenomicData4/Parkinson Datasets/"
+
+# metaphlan_tables <- 
+
+metadata_files <- list.files(input_dir, pattern = "metadata", full.names = TRUE) |> 
+  sapply(data.table::fread)
+
+View(
+  sapply(metadata_files, colnames, simplify = FALSE) |> 
+  reduce(rbind)
+  )
+
+```
+
+# Step 2 - meta-analysis

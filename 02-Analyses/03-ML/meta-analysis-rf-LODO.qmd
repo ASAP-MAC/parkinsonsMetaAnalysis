@@ -1,0 +1,280 @@
+---
+title: "Parkinson Meta-Analysis with Random Forest"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  pseudocount: 1e-8
+  transform: "asin_sqrt"
+  prevalThresh: 0.05
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(magrittr)
+library(tidyverse)
+library(parkinsonsMetagenomicData)
+library(ggtext)
+
+# Random forest packages
+library(ranger)
+library(pROC)
+
+
+library(ggpubr)
+# for table visualizations
+library(DT)
+
+library(biobakeryUtils)
+
+theme_set(theme_bw())
+
+# create base directory output
+outdir <- "results"
+dir.create(outdir)
+```
+
+```{r, cache=TRUE}
+input.path <- list.files("../Data", pattern = paste0(params$pMD_data_type, ".tse"), full.names = TRUE)
+Input.tse <- read_TSE_from_dir(input.path)
+
+# Define A Parkinson_1_0 variable. controls may have other diseases too
+Input.tse@colData$Parkinson_1_0 <- factor(ifelse(grepl("Parkinson", Input.tse@colData$disease), 1, 0))
+
+# convert NA in age_group to "unknown"
+Input.tse@colData$age_group <- factor(ifelse(is.na(Input.tse@colData$age_group), "Unknown", Input.tse@colData$age_group))
+
+# create number of diseases variables
+Input.tse@colData$number_diseases <- ifelse(Input.tse@colData$disease == "Healthy", 0, str_count(Input.tse@colData$disease, ";") + 1)
+
+
+# assay-wise curations
+assay(Input.tse, params$transform) <- asin(sqrt(assay(Input.tse, params$pMD_data_type)))
+# calculate CLR 
+Input.tse <- transformAssay(Input.tse, assay.type = params$pMD_data_type, method = "clr", pseudocount = as.numeric(params$pseudocount))
+
+Input.tse
+```
+
+# keep only datasets that are usable (enough case and controls)
+
+```{r}
+cases_ctrls_vs_study_name <- colData(Input.tse) %>% 
+  as.data.frame() %>% 
+  split.data.frame(.$study_name) %>% 
+  lapply(function(x) as.data.frame(table(x$disease, useNA = "always"))) %>% 
+  bind_rows(.id = "study_name")
+  
+cases_ctrls_vs_study_name_wider <- cases_ctrls_vs_study_name %>% 
+  pivot_wider(names_from = Var1, values_from = Freq, values_fill = 0)
+
+study_names_usable <- cases_ctrls_vs_study_name_wider$study_name[cases_ctrls_vs_study_name_wider$Healthy >= 10 & cases_ctrls_vs_study_name_wider$`Parkinson Disease` >= 10]
+
+Input_usableDatasets.tse <- Input.tse[,Input.tse@colData$study_name %in% study_names_usable]
+```
+
+# Machine Learning (RF) of PD vs controls (leave one out) with `ranger`
+
+  0 - Data were pre-normalized with the same approach 
+  as the previous meta-analysis
+  
+  1 - Train microbiome on all vs one dataset
+  
+  2 - test on the left-out dataset
+  
+  3 - Repeat for all
+
+Important: `ranger` doesn't seem to have a cross-validation step in the training.
+SIAMCAT has it, and it is likely what is taking so long to complete.
+
+```{r}
+library(ranger)
+library(pROC)
+
+auroc.all <- tibble(
+  study_left_out = character(0),
+  study_tested = character(0),
+  AUROC = double(0),
+  AUROC_P = double(0)
+)
+
+datasets <- unique(Input_usableDatasets.tse@colData$study_name)
+
+#--------------------------------
+feat_matrix <- assay(Input_usableDatasets.tse, params$transform)
+metadata <- as.data.frame(colData(Input_usableDatasets.tse))
+datasets <- unique(metadata$study_name)
+
+t0_ranger <- Sys.time()
+
+for(ds in datasets) {
+  
+  train_idx <- metadata$study_name != ds
+  train_features <- t(feat_matrix[, train_idx])
+  train_labels <- factor(metadata$Parkinson_1_0[train_idx])
+  
+  cat(sprintf("training on all except %s\n", ds))
+  
+  rf_model <- ranger(
+    x = train_features,
+    y = train_labels,
+    num.trees = 1000,
+    mtry = 10, 
+    probability = TRUE,
+    num.threads = 8,
+    seed = 1234
+  )
+  
+  for(ds2 in datasets) {
+    
+    test_idx <- metadata$study_name == ds2
+    test_features <- t(feat_matrix[, test_idx])
+    test_labels <- metadata$Parkinson_1_0[test_idx]
+    
+    cat(sprintf(" | testing on %s\n", ds2))
+    
+    pred_probs <- predict(rf_model, data = test_features)$predictions[, "1"]
+    
+    roc_obj <- roc(test_labels, pred_probs, quiet = TRUE)
+    # random null distribtion for test
+    roc2 <- roc(sample(0:1, size = length(test_labels), replace = TRUE), pred_probs, quiet = TRUE)
+    # extract auc from the roc curve ()
+    auc_value <- as.numeric(auc(roc_obj))
+
+    # Test against null hypothesis (random labels, AUC = 0.5)
+    # This creates a "null" ROC by comparing against random predictions
+    p_value <- roc.test(roc_obj, roc2 = roc2, method = "delong")$p.value
+
+    auroc.all <- add_row(auroc.all, 
+      study_left_out = ds,
+      study_tested = ds2,
+      AUROC = auc_value,
+      AUROC_P = p_value
+    )
+  }
+}
+
+t1_ranger <- Sys.time()
+```
+
+```{r}
+write_tsv(auroc.all, sprintf("%s/rf-PD_ctrl-LODO_%s.tsv", outdir, "ranger"))
+datatable(auroc.all %>% filter(AUROC != 1))
+```
+
+
+# Same but with SIAMCAT
+
+```{r}
+library(SIAMCAT)
+
+datasets <- unique(Input_usableDatasets.tse@colData$study_name)
+
+auroc.all <- tibble(
+  study_left_out = character(0),
+  study_tested = character(0),
+  AUROC = double(0)
+)
+
+t0_siamcat <- Sys.time()
+
+for(ds in datasets){
+  
+  # subset data to only the wanted dataset
+  Input_subset.tse <- Input_usableDatasets.tse[, Input_usableDatasets.tse@colData$study_name != ds]
+  
+  # create SIAMCAT object
+  sc.obj.train <- siamcat(feat=assay(Input_subset.tse, params$transform), meta=as.data.frame(colData(Input_subset.tse)), 
+                          label='Parkinson_1_0', case=1)
+  
+  # normalize features
+  sc.obj.train <- normalize.features(sc.obj.train, norm.method = 'pass', feature.type = "original")
+  
+  cat(sprintf("training on all except %s\n", ds))
+  
+  # Create data split
+  sc.obj.train <- create.data.split(
+    sc.obj.train,
+    num.folds = 5,
+    num.resample = 5,
+    inseparable = NULL
+  )
+  
+  # train Random Forest model
+  sc.obj.train <- train.model(
+    sc.obj.train,
+    method = "randomForest",
+    feature.type = "normalized",
+    verbose = 3, 
+    param.set = list(ntree = 1000, mtry = 10) # 1000 trees for training and 10 features per tree split (aka 'leaves')
+  )
+  
+  # iteratively test all except 1 dataset into the left out dataset
+  for(ds2 in datasets){
+    # get only one dataset
+    Input_subset2.tse <- Input_usableDatasets.tse[, Input_usableDatasets.tse@colData$study_name == ds]
+    cat(sprintf(" | testing on %s\n", ds2))
+    
+  # create SIAMCAT object of test set
+  sc.obj.test <- siamcat(
+    feat = assay(Input_subset2.tse, params$transform),
+    meta = as.data.frame(colData(Input_subset2.tse)),
+    label = 'Parkinson_1_0',
+    case = 1
+  )
+  # normalized test set (in our case it is pre-normalized)
+  sc.obj.test <- normalize.features(sc.obj.test, norm.method = 'pass', feature.type = "original")
+  # predict case/control status
+  sc.obj.test <- make.predictions(sc.obj.train, siamcat.holdout = sc.obj.test)
+  # evaluate predictions 
+  sc.obj.test <- evaluate.predictions(sc.obj.test)
+  
+  # calculate AUROC p-value (can't calculate it in SIAMCAT yet)
+  # roc2 <- roc.test(sc.obj.test@eval_data$roc, roc(sample(0:1, size = nrow(sc.obj.test@pred_matrix), replace = TRUE), pred_probs, quiet = TRUE)
+  auroc.all <- auroc.all %>% 
+                add_row(
+                  study_left_out=ds, 
+                  study_tested = ds2,
+                  AUROC= as.double(eval_data(sc.obj.test)$auroc)
+                  )
+  
+  }
+}
+t1_siamcat <- Sys.time()
+```
+
+```{r}
+write_tsv(auroc.all, sprintf("%s/rf-PD_ctrl-LODO_%s.tsv", outdir, "SIAMCAT"))
+datatable(auroc.all %>% filter(AUROC != 1))
+```
+
+# The quick ranger implementation makes little difference in our case but is much faster
+
+```{r}
+ranger_res <- read_tsv(sprintf("%s/rf-PD_ctrl-LODO_%s.tsv", outdir, "ranger"))
+siamcat_res <- read_tsv(sprintf("%s/rf-PD_ctrl-LODO_%s.tsv", outdir, "SIAMCAT"))
+
+runtime_ranger <- t1_ranger - t0_ranger
+runtime_siamcat <- t1_siamcat - t0_siamcat
+
+results_joined <- inner_join(ranger_res, siamcat_res, by = "study_left_out", suffix = c(".ranger", ".siamcat"))
+
+datatable(results_joined)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

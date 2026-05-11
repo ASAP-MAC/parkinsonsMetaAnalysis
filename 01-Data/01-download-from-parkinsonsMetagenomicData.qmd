@@ -1,0 +1,218 @@
+---
+title: "Parkinson Meta-Analysis"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "pathabundance_unstratified"
+  overwrite_output: "yes"
+  taxonomy_type: "GTDB"
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE
+)
+
+library(mia) # Bioconductor
+library(tidyverse) # CRAN
+library(magrittr) # CRAN
+library(DT) # CRAN
+
+# load or install install github libraries
+library(parkinsonsMetagenomicData) # remotes::install_github("ASAP-MAC/parkinsonsMetagenomicData")
+library(biobakeryUtils) # remotes::install_github("g-antonello/biobakeryUtils")
+library(ChocoPhlAnTaxonomies) # remotes::install_github("g-antonello/ChocoPhlAnTaxonomies")
+```
+
+# Download microbiome data
+
+## PD studies processed with the nextflowMAC pipeline
+
+```{r}
+
+processed_datasets <- read_tsv("https://raw.githubusercontent.com/ASAP-MAC/parkinsons_data_search/refs/heads/main/shotgun_samples/processed_datasets.tsv")
+
+processed_datasets[,1:5] %>% 
+  relocate(`doi.org link`, .after = `Sequence Acc. code`) %>% 
+  datatable(
+    caption = paste("List of studies processed with the aim to include them in 
+                    the meta-analysis so far.",
+    "Analysis date:", 
+    Sys.Date()))
+
+country_per_study.chr <- c(BedarfJR_2017 = "Germany", BoktorJC_2023 = "USA", BoktorJC_2023 = "USA", 
+DuruIC_2024 = "Finland", JoS_2022 = "South Korea", LeeEJ_2024 = "South Korea", 
+MaoL_2021 = "China", NishiwakiH_2024 = "Japan", QianY_2020 = "China", 
+WallenZD_2022 = "Deep South USA", ZhangM_2023 = "China", NGRC = "USA", 
+UAB = "Deep South USA")
+```
+
+## Load and filter metadata of `parkinsonsMetagenomicData`
+
+```{r}
+data("sampleMetadata", package = "parkinsonsMetagenomicData")
+
+metadata_datasets_available <- filter(sampleMetadata, 
+                                      # keep only studies that have human host
+                                      host_species == "Homo sapiens",
+                                      # keep only studies with Parkinson disease as target condition
+                                      target_condition == "Parkinson Disease",
+                                      # remove blanks from BoktorJC_2023
+                                      !grepl("BLANK", sample_id)
+                                      )
+
+metadata_datasets_available[, sapply(metadata_datasets_available, function(x) sum(is.na(x))/length(x)) < 0.1] %>% 
+  datatable()
+```
+
+## Available downloadable data types
+
+```{r}
+datatable(parkinsonsMetagenomicData::biobakery_files())
+```
+
+## Download parkinsonsMetagenomicData for `r params$pMD_data_type`
+
+```{r, eval=params$pMD_data_type != "genefamilies_unstratified"}
+# return the raw data as they come from pMD
+
+raw.tse <- returnSamples(data_type = params$pMD_data_type,
+                                            sample_data = metadata_datasets_available)
+
+# enhance data by adding basic assays and restructuring rowData
+parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, data_type = params$pMD_data_type)
+```
+
+## Replace taxonomy with GTDB if `data_type == "relative_abundance"` and `taxonomy_type == "GTDB"`
+
+```{r, eval=(params$pMD_data_type == "relative_abundance" & params$taxonomy_type == "GTDB")}
+parkinsonsMetaAnalysisData.tse <- ChocoPhlAnTaxonomies::tse_replace_mpa_with_GTDB_taxonomy(data.tse = parkinsonsMetaAnalysisData.tse, chocophlan_datestamp = "202403")
+```
+
+## Add curated information about the Country of the participants/samples
+
+```{r add country of study participants manually}
+
+parkinsonsMetaAnalysisData.tse@colData$Country <- country_per_study.chr[parkinsonsMetaAnalysisData.tse@colData$study_name]
+
+table(parkinsonsMetaAnalysisData.tse@colData$Country, useNA = "ifany")
+```
+
+## Split Boktor JC into 2 studies according to the BioProject ID
+
+```{r}
+tmp <- parkinsonsMetaAnalysisData.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  mutate(
+    study_name = gsub("\\.1$", "", paste(study_name, as.integer(as.factor(BioProject)), sep = "."))
+  ) %>% 
+  ungroup()
+
+# Re-fix rownames
+rownames(tmp) <- tmp$uuid
+
+parkinsonsMetaAnalysisData.tse@colData <- DataFrame(tmp)
+```
+
+## Sanity checks before saving data
+
+Before saving the TSE object, we need to make sure of the following:
+
+  - Remove samples with all-0 abundances (any assay)
+  - Remove samples that have even just 1 NA
+  - Have all abundances assigned to the `UN*` group (UNCLASSIFIED, UNMAPPED,
+  UNINTEGRATED)
+  
+### Remove samples with all zeros OR with at least 1 `NA` in any of the assays
+
+```{r}
+# look for any assay whether a sample has all-zero or has NAs
+all_0.logical <- sapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2_0 <- colSums(x) == 0
+  x2_NA <- colSums(is.na(x))
+  
+  return(x2_0 | x2_NA > 0)
+})
+
+# create a _any_ selection vector
+samples_to_remove <- apply(all_0.logical, 1, any)
+
+# remove samples
+parkinsonsMetaAnalysisData.tse <- parkinsonsMetaAnalysisData.tse[, !samples_to_remove]
+
+dim(parkinsonsMetaAnalysisData.tse)
+```
+
+### Samples with all counts/abundances assigned to `UNCLASSIFIED|UNMAPPED|UNINTEGRATED`
+
+```{r}
+all_abunds_UN <- sapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2 <- colSums(x[!grepl("UN", rownames(x)),, drop = FALSE]) == 0
+  return(x2)
+})
+
+samples_to_remove <- apply(all_abunds_UN, 1, any)
+
+# remove samples
+parkinsonsMetaAnalysisData.tse <- parkinsonsMetaAnalysisData.tse[, !samples_to_remove]
+dim(parkinsonsMetaAnalysisData.tse)
+```
+
+
+### prune all-0 taxa after sample filtering
+
+```{r}
+all_0_assay <- sapply(assays(parkinsonsMetaAnalysisData.tse), function(x){
+  x2 <- rowSums(x) == 0
+  return(x2)
+})
+
+features_to_remove <- apply(all_0_assay, 1, any)
+
+parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData.tse[!features_to_remove, ]
+dim(parkinsonsMetaAnalysisData_pruned.tse)
+```
+
+## Write TSE file
+
+```{r, message=TRUE}
+nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$data_type == params$pMD_data_type], params$pMD_data_type, sep = "_")
+
+fullOutName <- sprintf("parkinsonsMetagenomicData/%s.tse", nameSuffix)
+
+dir.create(fullOutName, showWarnings = FALSE)
+
+if(params$overwrite_output == "yes"){
+  unlink(fullOutName, recursive = TRUE)
+}
+
+write_TSE_to_dir(parkinsonsMetaAnalysisData_pruned.tse, out.dir = fullOutName)
+
+message(sprintf("Data saved as: %s", fullOutName))
+```
+
+## Check if just-written TSE is identical to the one in memory
+
+It is basically identical, but `data.table::fwrite` has a precision of `1e-15`.
+(see (#3862)[https://github.com/Rdatatable/data.table/issues/3862]).
+In practice this precision is enough for bioinformatic analyses.
+
+```{r}
+re_read_tse <- read_TSE_from_dir(fullOutName)
+
+all.equal(parkinsonsMetaAnalysisData_pruned.tse, re_read_tse, tolerance = 1e-16)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
