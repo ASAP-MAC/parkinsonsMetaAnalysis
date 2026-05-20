@@ -1,0 +1,375 @@
+---
+title: "Prepare pre-downloaded non-public data"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  overwrite_output: "yes"
+  taxonomy_type: "GTDB"
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE
+)
+
+library(mia) # Bioconductor
+library(tidyverse) # CRAN
+library(magrittr) # CRAN
+library(DT) # CRAN
+library(janitor) # CRAN
+
+# load or install install github libraries
+library(parkinsonsMetagenomicData) # remotes::install_github("ASAP-MAC/parkinsonsMetagenomicData")
+library(biobakeryUtils) # remotes::install_github("g-antonello/biobakeryUtils")
+library(ChocoPhlAnTaxonomies) # remotes::install_github("g-antonello/ChocoPhlAnTaxonomies")
+data("sampleMetadata")
+
+private_data.path <- "~/parkinsonMetaAnalysis_data/01-private_local_datasets/"
+```
+
+# Blue Poo dataset
+
+The biobakery data of the Blue Poo dataset are public and available through
+`parkinsonsMetagenomicData`. However, the metadata is private and should not 
+leave the Unitn server.
+
+```{r}
+AsnicarF_2021.tse <- sampleMetadata[sampleMetadata$study_name == "AsnicarF_2021",] %>% 
+  returnSamples(data_type = params$pMD_data_type) %>% 
+  pMD_enhance(data_type = params$pMD_data_type)
+```
+
+```{r}
+#---------- 2 setup variables
+bluePoo.path <- file.path(private_data.path, "bluePoo")
+#get selected variables
+selected_variables <- c("participant_id", "bowel_movement_frequency_changed_last_3_months", "bowel_movements_last_7_days", 
+"bristol_stool_score_average_last_3_months", "transit time (days)")
+#------------------------
+
+#------------- Prepare metadata 
+# load metadata and mapping file
+private_metadata.df <- read_tsv(file.path(bluePoo.path, "metadata_tt.tsv"), col_select = selected_variables)
+participant_id_mapping.df <- read_tsv(file.path(bluePoo.path, "P1__mapp_sample_names.tsv")) %>% 
+  select(participant_id = username, sample_accession)
+
+# merge metadata and mapping file
+bluePoo_metadata.df <- merge(participant_id_mapping.df, private_metadata.df, by = "participant_id")
+rownames(bluePoo_metadata.df) <- bluePoo_metadata.df$sample_accession
+
+# create Asnicar 2021-like metadata categorical variables
+bluePoo_metadata.df <- mutate(bluePoo_metadata.df,
+                              `transit time (hours)` = `transit time (days)` * 24,
+    transitTimeCut = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE),
+    transitTimeCutClasses = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE, labels = paste0("C", 1:4)),
+    transitTimeCutClassesDefinition =  case_when(
+     transitTimeCutClasses == "C1" ~ "Fast",
+     transitTimeCutClasses %in% c("C2","C3") ~ "Normal",
+     transitTimeCutClasses == "C4" ~ "Slow"
+     ) %>% factor(c("Normal", "Fast", "Slow"))) %>% 
+  # clean all column names to remove spaces
+  clean_names()
+#-----------------------------
+
+#----- filter tse to have only available individuals and merge metadata
+AsnicarF_2021.tse <- AsnicarF_2021.tse[, match(rownames(bluePoo_metadata.df), AsnicarF_2021.tse@colData$AsnicarF_2021_uncurated_sample_id)]
+if(!identical(AsnicarF_2021.tse@colData$AsnicarF_2021_uncurated_sample_id, rownames(bluePoo_metadata.df))){
+  stop("Subset and reordering of bluePoo metadata did not work")
+}
+AsnicarF_2021.tse@colData <- cbind(colData(AsnicarF_2021.tse), select(bluePoo_metadata.df, -participant_id, sample_accession))
+
+# correct metadata items and/or their classes
+AsnicarF_2021.tse@colData$age <- as.numeric(AsnicarF_2021.tse@colData$age)
+AsnicarF_2021.tse@colData$reads_processed <- as.numeric(AsnicarF_2021.tse@colData$reads_processed)
+AsnicarF_2021.tse@colData$target_condition <- "None"
+#-----------------------------
+# final step: replace taxonomy with GTDB
+if((params$pMD_data_type == "relative_abundance") & (params$taxonomy_type == "GTDB")){
+AsnicarF_2021.tse <- tse_replace_mpa_with_GTDB_taxonomy(AsnicarF_2021.tse, chocophlan_datestamp = 202403)
+}
+```
+
+## Write BluePoo (AsnicarF_2021)
+
+```{r}
+AsnicarF_2021.tse <- AsnicarF_2021.tse[rowSums(assay(AsnicarF_2021.tse))>0, ]
+```
+
+```{r}
+fullOutName <- file.path(sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/AsnicarF_2021_%s.tse", params$pMD_data_type))
+
+if(params$overwrite_output == "yes"){
+  unlink(fullOutName, recursive = TRUE)
+}
+
+write_TSE_to_dir(AsnicarF_2021.tse, out.dir = fullOutName)
+```
+
+# Payami not-yet-public data
+
+These data were run with the same pipeline but were not included pMD because 
+the authors did not publish reads online yet. Having a collaboration, we had 
+official access to the data.
+
+## NGRC + UAB Metadata curation
+
+```{r}
+PayamiData.path <- file.path(private_data.path, "MurchisonCF_2026", "input_from_cheaha")
+
+colData.df <- read_tsv(file.path(PayamiData.path, "colData.df.tsv")) %>% 
+  as.data.frame() %>% 
+  # curate a few columns so that they merge correctly with pMD
+  mutate(
+    study_name = Dataset,
+    age = Age_at_collection,
+    age_group = ifelse(age >= 65, "Elderly", "Adult"),
+    control = ifelse(Case_status == "PD", "Case", "Study Control"),
+    sex = ifelse(Sex == "M", "Male", "Female"),
+    target_condition = "Parkinson Disease"
+    )
+
+# create the disease column using columns 40 to 47
+disease.subs <- colData.df[,c(13,40:47)] %>% 
+  mutate(Case_status = ifelse(Case_status == "PD", "Y", "N")) %>% 
+  rename(`Parkinson Disease` = Case_status,
+         `Irritable Bowel Syndrome` = IBS,
+         `Inflammatory Bowel Disease` = IBS,
+         `Small Intestinal Bacterial Overgrowth` = SIBO,
+         `Ulcer` = Ulcer_past_3_months, 
+         `Celiac Disease` = Celiac_disease,
+         `Crohn's disease` = Crohns_disease
+         )
+
+for(colNm in names(disease.subs)){
+  disease.subs[[colNm]] <- ifelse(disease.subs[[colNm]] == "Y" & !is.na(disease.subs[[colNm]]), colNm, "")
+}
+# create variable "disease"
+colData.df$disease <- apply(disease.subs, 1, function(x) paste(x[x!= ""], collapse = ";")) %>% ifelse(. == "", "Healthy", .)
+
+# assign rownames to the uuids
+rownames(colData.df) <- colData.df$uuid
+```
+
+## Prepare NGRC
+
+```{r}
+colData.df_sub <- colData.df %>% 
+  filter(study_name =="NGRC")
+```
+
+### In case of HUMAnN `pathabundance_unstratified`
+
+```{r eval=params$pMD_data_type == "pathabundance_unstratified"}
+# load humann raw input
+input_basic.df <- read_tsv(file.path(PayamiData.path, "pathabundance_unstratified.tsv"))
+
+# make assay-like file
+input_basic_assay.df <- input_basic.df %>% 
+  column_to_rownames("pathway")
+
+# extract first column that is going to become the raw rowData.df
+rowData.df <- input_basic.df[,1, drop = FALSE]
+rownames(rowData.df) <- rowData.df[[1]]
+# match rownames and colnames so all are there and reorder
+intersect_samples <- intersect(rownames(colData.df_sub), colnames(input_basic_assay.df))
+colData.df_sub <- colData.df_sub[intersect_samples,]
+input_basic_assay.df <- input_basic_assay.df[, intersect_samples]
+
+NGRC.tse <- TreeSummarizedExperiment(
+  assays = list("relative_abundance" = as.matrix(input_basic_assay.df)),
+  colData = DataFrame(colData.df_sub),
+  rowData = DataFrame(rowData.df)
+) %>% pMD_enhance_HUMAnN_pwy()
+
+```
+
+### In case of MetaPhlAn `relative_abundance`
+
+```{r, eval=params$pMD_data_type == "relative_abundance"}
+# load merged input table
+# NB: it is already at SGB level
+input_basic.df <- read_tsv(file.path(PayamiData.path, "relative_abundance.tsv"))
+# first thing fix the UNCLASSIFIED case
+input_basic.df$clade_name[input_basic.df$clade_name == "UNCLASSIFIED"] <- paste(paste0(names(biobakeryUtils:::all_taxonomy_levels), "UNCLASSIFIED"), collapse = "|")
+
+# correct bug manually: there are 2x t__EUK4932, this is unexpected. abundances 
+# of this duplicated row should be summed because it is the same feature.
+# generalizing to all:
+input_basic_fixedDups.df <- input_basic.df %>%
+  group_by(clade_name) %>%
+  summarise(across(everything(), sum)) %>% 
+  ungroup() %>% 
+  as.data.frame()
+
+# make the basic assay data
+input_basic_assay.mtx <- input_basic_fixedDups.df %>% 
+  column_to_rownames("clade_name") %>% 
+  as.matrix()
+
+# make the rowData 
+rowData.df <- input_basic_fixedDups.df[, 1, drop = FALSE] %>%
+  separate_wider_delim(
+    cols = all_of("clade_name"),
+    delim = "|",
+    names = unname(biobakeryUtils:::all_taxonomy_levels),
+    too_few = "align_start"
+  )
+rownames(rowData.df) <- rowData.df$SGB
+
+# also set the rownames to the assay, the order is not changed, no checks needed
+rownames(input_basic_assay.mtx) <- rownames(rowData.df)
+
+# match rownames and colnames so all are there and reorder
+intersect_samples <- intersect(rownames(colData.df_sub), colnames(input_basic_assay.mtx))
+colData.df_sub <- colData.df_sub[intersect_samples,]
+input_basic_assay.mtx <- input_basic_assay.mtx[, intersect_samples]
+
+# create real relative abundance
+relative_abundance.mtx <- apply(input_basic_assay.mtx, 2, function(x) x/sum(x))
+
+# Create counts matrix
+assay_counts.mtx <- sweep(relative_abundance.mtx, 2, colData.df_sub$reads_processed, "*")
+
+NGRC.tse <- TreeSummarizedExperiment(
+  assays = list("relative_abundance" = relative_abundance.mtx, "percent" = input_basic_assay.mtx, "counts" = assay_counts.mtx),
+  colData = DataFrame(colData.df_sub),
+  rowData = DataFrame(rowData.df)
+)
+
+# final step: replace taxonomy with GTDB
+if((params$pMD_data_type == "relative_abundance") & (params$taxonomy_type == "GTDB")){
+NGRC.tse <- tse_replace_mpa_with_GTDB_taxonomy(NGRC.tse, chocophlan_datestamp = 202403)
+}
+```
+
+### Write NGRC
+
+```{r}
+fullOutName <- sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/NGRC_%s.tse", params$pMD_data_type)
+  
+if(params$overwrite_output == "yes"){
+  unlink(fullOutName, recursive = TRUE)
+}
+
+write_TSE_to_dir(NGRC.tse, out.dir = fullOutName)
+```
+
+## Prepare UAB
+
+```{r}
+colData.df_sub <- colData.df %>% 
+  filter(study_name =="UAB")
+```
+
+### In case of `pathabundance_unstratified`
+
+```{r eval=params$pMD_data_type == "pathabundance_unstratified"}
+# load humann raw input
+input_basic.df <- read_tsv(file.path(PayamiData.path, "pathabundance_unstratified.tsv"))
+
+# make assay-like file
+input_basic_assay.df <- input_basic.df %>% 
+  column_to_rownames("pathway")
+
+# extract first column that is going to become the raw rowData.df
+rowData.df <- input_basic.df[,1, drop = FALSE]
+rownames(rowData.df) <- rowData.df[[1]]
+# match rownames and colnames so all are there and reorder
+intersect_samples <- intersect(rownames(colData.df_sub), colnames(input_basic_assay.df))
+colData.df_sub <- colData.df_sub[intersect_samples,]
+input_basic_assay.df <- input_basic_assay.df[, intersect_samples]
+
+UAB.tse <- TreeSummarizedExperiment(
+  assays = list("relative_abundance" = as.matrix(input_basic_assay.df)),
+  colData = DataFrame(colData.df_sub),
+  rowData = DataFrame(rowData.df)
+) %>% pMD_enhance_HUMAnN_pwy()
+```
+
+### In case of MetaPhlAn `relative_abundance`
+
+```{r, eval=params$pMD_data_type == "relative_abundance"}
+# load merged input table
+# NB: it is already at SGB level
+input_basic.df <- read_tsv(file.path(PayamiData.path, "relative_abundance.tsv"))
+# first thing fix the UNCLASSIFIED case
+input_basic.df$clade_name[input_basic.df$clade_name == "UNCLASSIFIED"] <- paste(paste0(names(biobakeryUtils:::all_taxonomy_levels), "UNCLASSIFIED"), collapse = "|")
+
+# correct bug manually: there are 2x t__EUK4932, this is unexpected. abundances 
+# of this duplicated row should be summed because it is the same feature.
+# generalizing to all:
+input_basic_fixedDups.df <- input_basic.df %>%
+  group_by(clade_name) %>%
+  summarise(across(everything(), sum)) %>% 
+  ungroup() %>% 
+  as.data.frame()
+
+# make the basic assay data
+input_basic_assay.mtx <- input_basic_fixedDups.df %>% 
+  column_to_rownames("clade_name") %>% 
+  as.matrix()
+
+# make the rowData 
+rowData.df <- input_basic_fixedDups.df[, 1, drop = FALSE] %>%
+  separate_wider_delim(
+    cols = all_of("clade_name"),
+    delim = "|",
+    names = unname(biobakeryUtils:::all_taxonomy_levels),
+    too_few = "align_start"
+  )
+rownames(rowData.df) <- rowData.df$SGB
+
+# also set the rownames to the assay, the order is not changed, no checks needed
+rownames(input_basic_assay.mtx) <- rownames(rowData.df)
+
+# match rownames and colnames so all are there and reorder
+intersect_samples <- intersect(rownames(colData.df_sub), colnames(input_basic_assay.mtx))
+colData.df_sub <- colData.df_sub[intersect_samples,]
+input_basic_assay.mtx <- input_basic_assay.mtx[, intersect_samples]
+
+# create real relative abundance
+relative_abundance.mtx <- apply(input_basic_assay.mtx, 2, function(x) x/sum(x))
+
+# Create counts matrix
+assay_counts.mtx <- sweep(relative_abundance.mtx, 2, colData.df_sub$reads_processed, "*")
+
+UAB.tse <- TreeSummarizedExperiment(
+  assays = list("relative_abundance" = relative_abundance.mtx, "percent" = input_basic_assay.mtx, "counts" = assay_counts.mtx),
+  colData = DataFrame(colData.df_sub),
+  rowData = DataFrame(rowData.df)
+)
+# final step: replace taxonomy with GTDB
+if((params$pMD_data_type == "relative_abundance") & (params$taxonomy_type == "GTDB")){
+  UAB.tse <- tse_replace_mpa_with_GTDB_taxonomy(UAB.tse, chocophlan_datestamp = 202403)
+}
+```
+
+### Write UAB
+
+```{r}
+UAB.tse <- UAB.tse[rowSums(assay(UAB.tse)) > 0,]
+```
+
+```{r}
+fullOutName <- sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/UAB_%s.tse", params$pMD_data_type)
+  
+if(params$overwrite_output == "yes"){
+  unlink(fullOutName, recursive = TRUE)
+}
+
+write_TSE_to_dir(UAB.tse, out.dir = fullOutName)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

@@ -1,27 +1,37 @@
-# Download public `parkinsonsMetagenomicData`
+# Prepare data for meta-analysis
 
-## MetaPhlAn relative abundance data
+## Download public data from `parkinsonsMetagenomicData`
 
 ```bash
 quarto render 01-download-from-parkinsonsMetagenomicData.qmd \
-  -P pMD_data_type:"relative_abundance" \ # downlaod MetaPhlAn
-  -P overwrite_output:"yes" \ # overwrite target directory
+  # downlaod MetaPhlAn
+  -P pMD_data_type:"relative_abundance" \
+  # overwrite target directory
+  -P overwrite_output:"yes" \
+  -P taxonomy_type:"GTDB"
+  
+quarto render 01-download-from-parkinsonsMetagenomicData.qmd \
+  # downlaod MetaPhlAn
+  -P pMD_data_type:"pathabundance_unstratified" \
+  # overwrite target directory
+  -P overwrite_output:"yes" \
   -P taxonomy_type:"GTDB"
 ```
 
-## HUMAnN v3.9 unstratified pathways 
+## Prepare unpublished data locally (blue Poo, Payami NGRC, Payami UAB)
 
 ```bash
-quarto render 01-download-from-parkinsonsMetagenomicData.qmd \
--P pMD_data_type:"pathabundance_unstratified" \ # downlaod HUMAnN unstrat. PTW
--P overwrite_output:"yes" \# overwrite target directory
+quarto render 02-prepare-private-data.qmd -P pMD_data_type:"relative_abundance"
+quarto render 02-prepare-private-data.qmd -P pMD_data_type:"pathabundance_unstratified"
 ```
 
-# Prepare unpublished data locally
+## Files are stores in local home to ensure data privacy
 
-## Blue Poo (PMID: 33722860)
+See TSE directories in `~/parkinsonMetaAnalysis_data/02-intermediate-datasets/...`
 
-## NGRC from Payami Lab
+## Merge all data into one TSE for simplicity
 
-## UAB from Payami Lab
-
+```bash
+quarto render 03-merge-data-for-PD-metaAnalysis.qmd -P pMD_data_type:"relative_abundance"
+quarto render 03-merge-data-for-PD-metaAnalysis.qmd -P pMD_data_type:"pathabundance_unstratified"
+```

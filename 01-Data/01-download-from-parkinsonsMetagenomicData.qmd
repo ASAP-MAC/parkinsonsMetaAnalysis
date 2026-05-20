@@ -1,5 +1,5 @@
 ---
-title: "Parkinson Meta-Analysis"
+title: "Download public data from parkinsonsMetagenomicData"
 author: "Giacomo Antonello"
 date: "`r Sys.Date()`"
 format: 
@@ -9,7 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  pMD_data_type: "pathabundance_unstratified"
+  pMD_data_type: "relative_abundance"
   overwrite_output: "yes"
   taxonomy_type: "GTDB"
 ---
@@ -47,11 +47,6 @@ processed_datasets[,1:5] %>%
     "Analysis date:", 
     Sys.Date()))
 
-country_per_study.chr <- c(BedarfJR_2017 = "Germany", BoktorJC_2023 = "USA", BoktorJC_2023 = "USA", 
-DuruIC_2024 = "Finland", JoS_2022 = "South Korea", LeeEJ_2024 = "South Korea", 
-MaoL_2021 = "China", NishiwakiH_2024 = "Japan", QianY_2020 = "China", 
-WallenZD_2022 = "Deep South USA", ZhangM_2023 = "China", NGRC = "USA", 
-UAB = "Deep South USA")
 ```
 
 ## Load and filter metadata of `parkinsonsMetagenomicData`
@@ -94,15 +89,6 @@ parkinsonsMetaAnalysisData.tse <- pMD_enhance(input.tse = raw.tse, data_type = p
 
 ```{r, eval=(params$pMD_data_type == "relative_abundance" & params$taxonomy_type == "GTDB")}
 parkinsonsMetaAnalysisData.tse <- ChocoPhlAnTaxonomies::tse_replace_mpa_with_GTDB_taxonomy(data.tse = parkinsonsMetaAnalysisData.tse, chocophlan_datestamp = "202403")
-```
-
-## Add curated information about the Country of the participants/samples
-
-```{r add country of study participants manually}
-
-parkinsonsMetaAnalysisData.tse@colData$Country <- country_per_study.chr[parkinsonsMetaAnalysisData.tse@colData$study_name]
-
-table(parkinsonsMetaAnalysisData.tse@colData$Country, useNA = "ifany")
 ```
 
 ## Split Boktor JC into 2 studies according to the BioProject ID
@@ -166,7 +152,6 @@ parkinsonsMetaAnalysisData.tse <- parkinsonsMetaAnalysisData.tse[, !samples_to_r
 dim(parkinsonsMetaAnalysisData.tse)
 ```
 
-
 ### prune all-0 taxa after sample filtering
 
 ```{r}
@@ -181,12 +166,21 @@ parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData.tse[!feature
 dim(parkinsonsMetaAnalysisData_pruned.tse)
 ```
 
+## Adjustments to metadata
+
+```{r}
+# force reads_processed to integer (probably not needed)
+parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed <- as.numeric(gsub("#([0-9]+).*", 
+    "\\1", parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed))
+# force age to integer
+parkinsonsMetaAnalysisData_pruned.tse@colData$age <- as.numeric(parkinsonsMetaAnalysisData_pruned.tse@colData$age)
+```
+
 ## Write TSE file
 
 ```{r, message=TRUE}
-nameSuffix <- paste(parkinsonsMetagenomicData::biobakery_files()$tool[parkinsonsMetagenomicData::biobakery_files()$data_type == params$pMD_data_type], params$pMD_data_type, sep = "_")
 
-fullOutName <- sprintf("parkinsonsMetagenomicData/%s.tse", nameSuffix)
+fullOutName <- sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/pMD_%s.tse", params$pMD_data_type)
 
 dir.create(fullOutName, showWarnings = FALSE)
 
