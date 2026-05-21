@@ -2,11 +2,11 @@ biobakeryForestPlot <- function(meta_input, StdEffSizes, studies_Stats.df, topN_
   
   top_pos <- meta_input %>%
     filter(RE_het_P.value > 0.05) %>%
-    slice_max(order_by = RE_Eff.Size, n = topN_feat/2)
+    slice_max(order_by = RE_Eff.Size, n = floor(topN_feat/2))
   
   top_neg <- meta_input %>%
     filter(RE_het_P.value > 0.05) %>%
-    slice_min(order_by = RE_Eff.Size, n = topN_feat/2)
+    slice_min(order_by = RE_Eff.Size, n = floor(topN_feat/2))
   
   topN_bottomN_All.df <- bind_rows(top_pos, top_neg) %>% 
     arrange(desc(RE_Eff.Size))

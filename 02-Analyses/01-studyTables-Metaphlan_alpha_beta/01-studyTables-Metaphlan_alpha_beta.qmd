@@ -1,0 +1,248 @@
+---
+title: "Study tables, MetaPhlAn alpha and beta diversities"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  pseudocount: 1e-8
+  transform: "asin_sqrt"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+# Data and environment preparation 
+
+```{r setup, message=FALSE, warning=FALSE}
+source("../00-PD-Control-meta-analysis-MetaPhlAn-data-prep.R", chdir = TRUE)
+```
+
+# Table 1 - dataset x PD, unavailable covariates limit meta-analysis strength
+
+## All samples available after filtering
+
+```{r table of samples per condition}
+library(gtsummary)
+
+table1_complete <- colData(Input.tse) %>% 
+  as.data.frame() %>% 
+  select(`Study` = study_name, Country, `Age Gr.` = age_group, Sex = sex, `N. diseases` = number_diseases, Parkinson_1_0) %>% 
+   tbl_summary(
+    by = Parkinson_1_0, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall() %>% # Add an overall column
+  modify_header(label ~ "**Characteristic**") # Customize header
+
+
+```
+
+## Datasets with available age and sex information
+
+```{r table of samples per condition with both sex and age_group available}
+table1_availSex <- colData(Input.tse) %>% 
+  as.data.frame() %>% 
+  filter(complete.cases(select(., age_group, sex))) %>% 
+  select(`Study` = study_name, Country, `Age Gr.` = age_group, Sex = sex, `N. diseases` = number_diseases, Parkinson_1_0) %>% 
+   tbl_summary(
+    by = Parkinson_1_0, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall() %>% # Add an overall column
+  modify_header(label ~ "**Characteristic**") # Customize header
+```
+
+## Datasets with at least 30 individuals in PD and Control groups
+
+```{r table of samples per condition with sufficient case/ctrl samples}
+ok_datasets <- Input.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(Parkinson_1_0 == 0) > 30,
+    sum(Parkinson_1_0 == 1) > 30
+  )
+
+Input_usableDatasets.tse <- Input.tse[,Input.tse@colData$study_name %in% unique(ok_datasets$study_name)]
+
+# filter all-o rows again
+Input_usableDatasets.tse <- Input_usableDatasets.tse[rowSums(assay(Input_usableDatasets.tse)) > 0,]
+
+table1_ok_Parkinson <- colData(Input_usableDatasets.tse) %>% 
+  as.data.frame() %>% 
+  filter(complete.cases(select(., age_group, sex))) %>% 
+  select(`Study` = study_name, Country, `Age Gr.` = age_group, Sex = sex, `N. diseases` = number_diseases, Parkinson_1_0) %>% 
+   tbl_summary(
+    by = Parkinson_1_0, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall() %>% # Add an overall column
+  modify_header(label ~ "**Characteristic**") # Customize header
+
+Input_usableDatasets.tse
+```
+
+# Alpha diversities
+
+```{r calculate alpha diverity metrics and make linear models}
+alphas <- c("observed_richness", "shannon_diversity", "faith")
+Input_usableDatasets.tse <- AddPhyloTree_to_mpa_tse(Input_usableDatasets.tse, chocophlan_datestamp = "202403")
+
+# Calculate alphas
+Input_usableDatasets.tse <- addAlpha(Input_usableDatasets.tse, assay.type = "relative_abundance", index = alphas)
+```
+
+## PCoAs
+
+PCoAs depend on the input data transformation, this is an attempt to incorporate
+Multiple options
+
+```{r curate beta params}
+if(params$transform == "asin_sqrt"){
+  assay(Input_usableDatasets.tse, "asin_sqrt") <- asin(sqrt(assay(Input_usableDatasets.tse)))
+  beta.method = "euclidean"
+}
+
+if(params$transform == "clr"){
+  Input_usableDatasets.tse <- transformAssay(Input_usableDatasets.tse, assay.type = "relative_abundance", method = params$transfor, pseudocount = params$pseudocount)
+  beta.method = "euclidean"
+}
+
+if(params$transform == "relative_abundance" | is.null(params$transform)){
+  beta.method = "bray"
+}
+
+beta.name <- paste(params$transform, beta.method, sep = "_")
+```
+
+```{r MDS plots}
+Input_usableDatasets.tse <- addMDS(Input_usableDatasets.tse, assay.type = params$transform, method = beta.method, name = beta.name)
+
+variances_explained <- attr(reducedDim(Input_usableDatasets.tse, beta.name), "eig")
+prop_variances_explained <- variances_explained/sum(variances_explained)
+
+betadiv_data.df <- cbind.data.frame(as.data.frame(colData(Input_usableDatasets.tse)), reducedDim(Input_usableDatasets.tse, beta.name) %>% as.data.frame() %>% set_names(paste("MDS", 1:ncol(.))))
+
+colorVars <- c("Country", "study_name", "Parkinson_1_0")
+
+PCoA_plots.list <- map(colorVars, function(colorVar) {
+  betadiv_data.df %>%
+    ggplot(aes(x = `MDS 1`, y = `MDS 2`, color = !!sym(colorVar), fill = !!sym(colorVar))) + 
+  geom_point(size = 2.5, stroke = 1, color = "black") +
+  geom_point(size = 2.5) +
+  ggConvexHull::geom_convexhull(show.legend = FALSE, alpha = 0.2) + 
+  ggsci::scale_color_jco() +
+  ggsci::scale_fill_jco() +
+  theme(legend.position = "top", legend.text = element_markdown()) +
+  labs(color = colorVar,
+       fill = colorVar,
+       x = paste0("PCoA Axis 1 [", round(prop_variances_explained[1]*100, 1), "%]"),
+       y = paste0("PCoA Axis 2 [", round(prop_variances_explained[2]*100, 2), "%]")
+  )
+}) %>% 
+  set_names(sprintf("MDS_%s_color_%s", beta.name, colorVars))
+
+PCoA_plots.list[[3]]
+```
+
+```{r PERMANOVA, cache=TRUE}
+PERMANOVA_name <- paste(beta.name, "PERMANOVA", sep = "_")
+
+Input_usableDatasets.tse <- addPERMANOVA(
+  Input_usableDatasets.tse,
+  assay.type = params$transform,
+  method = beta.method,
+  name = PERMANOVA_name,
+  formula = x ~ study_name + Parkinson_1_0 + reads_processed,
+  by = "margin",
+  permutations = 2000, 
+  parallel = 8
+)
+
+PERMANOVA_to_table(Input_usableDatasets.tse, name = PERMANOVA_name)
+```
+
+# Output Figures (as `.rds`)
+
+```{r figures outdir setup}
+outdir_figures <- file.path(outdir, "Figures")
+dir.create(outdir_figures)
+```
+
+## List of PCoA plots colored by different colData columns
+
+```{r save MDS plots as .rds}
+imap(PCoA_plots.list, function(plot.gg, pltName){
+  saveRDS(plot.gg, file = sprintf("%s/01-%s.rds", outdir_figures, pltName))
+})
+```
+
+# Output Tables (multiple formats)
+
+```{r tables outdir setup}
+outdir_tables <- file.path(outdir, "Tables")
+dir.create(outdir_tables)
+```
+
+## Filtering steps - samples and features excluded (as `.tsv`)
+
+```{r steps of samples and features exclusions}
+write_tsv(rbind(filtering_steps.tb, c("Enough Cases and Controls per dataset", dim(Input_usableDatasets.tse))), file = sprintf("%s/01-filtering-samples-and-features-excluded.tsv", outdir_tables))
+```
+
+## Three versions of study tables - overview of datasets and covariates (as `.docx`)
+
+```{r write demographic tables}
+as_flex_table(table1_complete) %>% flextable::save_as_docx(path = sprintf("%s/02-table1-complete.docx", outdir_tables))
+
+as_flex_table(table1_availSex) %>% flextable::save_as_docx(path = sprintf("%s/02-table1-availSex.docx", outdir_tables))
+
+as_flex_table(table1_ok_Parkinson) %>% flextable::save_as_docx(path = sprintf("%s/02-table1-okParkinson.docx", outdir_tables))
+```
+
+## Alpha diversity tables for future figures and modeling
+
+```{r write alpha diversity data for future plots and stats}
+data_for_alpha_calculations <- colData(Input_usableDatasets.tse) %>% 
+  as.data.frame() %>% 
+  select(all_of(alphas), Parkinson_1_0, age_group, number_diseases, reads_processed, study_name) %>% 
+write_tsv(file = sprintf("%s/03-alpha_diversity_data.tsv", outdir_tables))
+```
+
+## Alpha diversity modeling results
+
+```{r lm of alpha vs PD and other covariates}
+# Model alpha diversity including covariates
+alpha_regression_pd_study.lm.list <- sapply(alphas, function(x) {
+  lm(as.formula(sprintf("%s ~ Parkinson_1_0 + study_name + number_diseases", x)), data = data_for_alpha_calculations)
+}, simplify = FALSE) %>% 
+  lapply(broom::tidy) %>%
+  lapply(mutate, FDR = p.adjust(p.value, "BH"))
+
+bind_rows(alpha_regression_pd_study.lm.list, .id = "alpha_metric") %>% 
+  write_tsv(file = sprintf("%s/04-alpha_diversity_models_joined.tsv", outdir_tables))
+```
+
+## PERMANOVA table
+
+```{r PERMANOVA calculation based on beta-diversity}
+biobakeryUtils::PERMANOVA_to_table(Input_usableDatasets.tse, name = PERMANOVA_name) %>% 
+  write_tsv(file = sprintf("%s/05-%s.tsv", outdir_tables, PERMANOVA_name))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

@@ -44,33 +44,10 @@ source("../R/lm_standardization_utility_functions.R")
 
 # `AsnicarF_2021`
 
-## Load private metadata and define transit time groups
+## Load private data
 
 ```{r}
-# This generates a merged version to map to predict metadata
-source("../Data/bluePoo/bluePoo_metadata/bluePoo_harmonize_metadata.R")
 
-studyNames <- c("WallenZD_2022", "AsnicarF_2021")
-bluePoo_vars.chr <- c("bowel_movements_last_7_days", "bristol_stool_score_average_last_3_months", "transit time (days)")
-# load separate asnicar metadata
-bluePoo_meta_raw.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/bluePoo_metadata_ga.tsv") 
-
-# process what we need from this metadata
-AsnicarF_meta_select.df <-  bluePoo_meta_raw.df %>% 
-  transmute(
-    subject_id = sample_alias,
-    `transit time (hours)` = `transit time (days)` * 24,
-    transitTimeCut = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE),
-    transitTimeCutClasses = cut(`transit time (hours)`, breaks = c(0, 14, 38, 58,max(`transit time (hours)` + 1e-6, na.rm = TRUE)), right = FALSE, labels = paste0("C", 1:4)),
-    transitTimeCutClassesDef =  case_when(
-     transitTimeCutClasses == "C1" ~ "Fast",
-     transitTimeCutClasses %in% c("C2","C3") ~ "Normal",
-     transitTimeCutClasses == "C4" ~ "Slow"
-     ) %>% factor(c("Normal", "Fast", "Slow"))
-    )
-AsnicarF_pMD.df <- read_tsv("../Data/bluePoo/bluePoo_metadata/AsnicarF_2021.tsv")
-
-Asnicar_complete.df <- inner_join(AsnicarF_meta_select.df, AsnicarF_pMD.df, by = "subject_id")
 ```
 
 ```{r}

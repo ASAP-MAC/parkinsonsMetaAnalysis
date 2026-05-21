@@ -1,0 +1,149 @@
+---
+title: "Parkinson Meta-Analysis"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  DA_method: "limma"
+---
+
+Choices for `relative_abundance` data:
+  - prevalence and abundance filter
+  - limma-voom on simil-counts data (relative abundance x reads processed)
+  - no standardization after modeling
+  - meta-analyze eff. size and standard errors of the modeling estimates
+
+# Data and environment preparation
+
+```{r setup, message=FALSE, warning=FALSE}
+# ------ prepare outdir --------
+outdir <- sprintf("results/%s/%s", params$pMD_data_type, params$DA_method)
+dir.create(outdir, recursive = TRUE)
+# ------------------------------
+
+library(meta)
+library(limma)
+library(biobakeryUtils)
+library(mia)
+library(openxlsx2)
+library(tidyverse)
+library(knitr)
+Input_parkinson_usableDatasets.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_PD-%s.tse/", params$pMD_data_type))
+
+Input_parkinson_usableDatasets.tse
+```
+
+## Case of `limma`
+
+```{r, eval=(params$DA_method == "limma")}
+assay(Input_parkinson_usableDatasets.tse, "counts") <- sweep(assay(Input_parkinson_usableDatasets.tse), MARGIN = 2, STATS = Input_parkinson_usableDatasets.tse@colData$reads_processed, FUN = "*")
+
+per_dataset_DA_results.tb <- Input_parkinson_usableDatasets.tse %>% 
+  splitOn(group = "study_name") %>% 
+  lapply(function(x.tse) {
+    x.tse <- x.tse[rowSums(assay(x.tse, "relative_abundance")) > 0,]
+    return(limmaTSE(tse = x.tse, assay.type = "counts", voom.transform = TRUE, formula = ~ parkinson_for_analysis, coef = "parkinson_for_analysis1", p.adj_method = "BH"))
+  }
+  ) %>% bind_rows(.id = "study_name")
+```
+
+## Case of `Maaslin2`
+
+```{r, eval=(params$DA_method == "maaslin2")}
+per_dataset_DA_results.tb <- Input_parkinson_usableDatasets.tse %>%
+  splitOn(group = "study_name") %>%
+  lapply(function(x.tse) {
+    x.tse <- x.tse[rowSums(assay(x.tse, "relative_abundance")) > 0, ]
+    return(
+      maaslin2TSE(
+        tse = x.tse,
+        assay.type = "relative_abundance",
+        outdir = outdir,
+        outdir_delete = TRUE,
+        normalization = "NONE",
+        min_prevalence = 0,
+        min_abundance = 0,
+        plot_heatmap = FALSE,
+        plot_scatter = FALSE,
+        save_scatter = FALSE,
+        standardize = FALSE,
+        min_variance = 0,
+        transform = "LOG",
+        max_significance = 0.1,
+        fixed_effects = "parkinson_for_analysis",
+        correction = "BH"
+      )
+    )
+  }) %>% bind_rows(.id = "study_name")
+```
+
+## meta-analyze datasets (`REML`)
+
+```{r, meta-analysis functions definition}
+MetaAnalysis_results <- metaAnalyze(res.df = per_dataset_DA_results.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha", minStudies.n = 6)
+```
+
+## Results at a glance
+
+```{r}
+feats_tot <- nrow(MetaAnalysis_results$MetaAnalysis)
+
+heterog <- MetaAnalysis_results$MetaAnalysis %>% 
+  filter(Het.Pval < 0.1) %>% 
+  nrow()
+
+notSignif <- MetaAnalysis_results$MetaAnalysis %>% 
+  filter(
+    Het.Pval >= 0.1, 
+    P.Value.adj >+ 0.1
+    ) %>% 
+  nrow()
+
+Positive_assoc <- MetaAnalysis_results$MetaAnalysis %>% 
+  filter(
+    Het.Pval >= 0.1, 
+    P.Value.adj < 0.1,
+    Beta.pool > 0
+    ) %>% 
+  nrow()
+
+Negative_assoc <- MetaAnalysis_results$MetaAnalysis %>% 
+  filter(
+    Het.Pval >= 0.1, 
+    P.Value.adj < 0.1,
+    Beta.pool < 0
+    ) %>% 
+  nrow()
+
+cbind(
+  c("Tot tested", "N. heterogeneous", "Not Signif. (FDR >= 0.1)", "Signif. Positive assoc.", "Signif. Negative assoc."),
+  c(feats_tot, heterog, notSignif, Positive_assoc, Negative_assoc)
+) %>% kable()
+```
+
+# Write results
+
+## Per-dataset results as long format
+
+```{r}
+write_tsv(per_dataset_DA_results.tb, file = sprintf("%s/01-singleDataset_DA.tsv", outdir))
+```
+
+## Meta-analysis results (as `.xlsx`)
+
+```{r}
+# meta-analysis results as list of Cohen D, SE(CohenD)
+openxlsx2::write_xlsx(MetaAnalysis_results, file = sprintf("%s/02-metaAnalysis.xlsx", outdir))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
