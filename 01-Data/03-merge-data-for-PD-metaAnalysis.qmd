@@ -9,131 +9,125 @@ format:
     toc-depth: 2
 editor: source
 params:
-  pMD_data_type: "relative_abundance"
-  overwrite_output: "yes"
+  biobakery_pipeline: "MetaPhlAn"
+  overwrite_TSE_out: "yes"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
 
-```{r}
+```{r setup}
+if(!(params$biobakery_pipeline %in% c("MetaPhlAn", "HUMAnN"))){
+  stop("Biobakery pipeline requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
+}
+
+library(knitr)
 library(mia)
 library(biobakeryUtils)
 library(tidyverse)
+
+opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE
+)
+sample_filtering_steps <- list()
+output_data.path <- "~/parkinsonMetaAnalysis_data/"
+```
+
+```{r dataset name mapping utilities}
+mapping_names.df <- data.frame(
+  data_type = c("relative_abundance", "pathabundance_unstratified"),
+  biobakery_pipeline = c("MetaPhlAn", "HUMAnN"),
+  output_name = c("relative_abundance", "pathways")  
+)
+
+pipeline <- params$biobakery_pipeline
+output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_pipeline == pipeline]
+data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_pipeline == pipeline]
 ```
 
 ```{r load and merge datasets}
 # load datasets
 PD_data.list <- list(
-  Input.tse = read_TSE_from_dir(
-    file.path(sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/pMD_%s.tse", params$pMD_data_type))
+  pMD = read_TSE_from_dir(
+    sprintf(sprintf("%s/01-pMD_datasets/pMD_%s.tse", output_data.path, pipeline))
   ),
-  NGRC.tse = read_TSE_from_dir(
-    sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/NGRC_%s.tse", params$pMD_data_type)
+  NGRC_UAB = read_TSE_from_dir(
+    sprintf("%s/02-private_local_datasets/Payami/NGRC_UAB_%s.tse/", output_data.path, pipeline)
   ),
-  UAB.tse = read_TSE_from_dir(
-    sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/UAB_%s.tse", params$pMD_data_type)
-  ),
-  AsnicarF_2021.tse = read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/02-intermediate-datasets/AsnicarF_2021_%s.tse", params$pMD_data_type))
-)
+  AsnicarF_2021.tse = read_TSE_from_dir(sprintf("%s/02-private_local_datasets/bluePoo/AsnicarF_2021_%s.tse", output_data.path, pipeline))
+) %>% 
+  # workaround on age being character, not sure why this still happens
+  lapply(function(x){
+   x@colData$age <- as.numeric(x@colData$age)
+    return(x)
+  }
+    )
 
-# Merge all datasets
-all_data_merged.tse <- suppressMessages(reduce(
+# Merge all datasets counts
+tmp_counts.tse <- suppressMessages(reduce(
   PD_data.list,
   mergeSEs,
-  assay.type    = "relative_abundance",
+  assay.type =  "counts",
   missing.values = 0,
   collapse.rows  = TRUE
 ))
 
-# Fix column name casing that mia changes on the SGB column
+# merge all dataset relative_abundances
+tmp_relative_abundance.tse <- suppressMessages(reduce(
+  PD_data.list,
+  mergeSEs,
+  assay.type =  "relative_abundance",
+  missing.values = 0,
+  collapse.rows  = TRUE
+))
+
+# transfer relative_abundance into main merged tse
+all_data_merged.tse <- tmp_counts.tse
+assay(all_data_merged.tse, "relative_abundance") <- assay(tmp_relative_abundance.tse)
+
+# Fix column name casing that mia changes on the SGB column in case of MetaPhlAn
+if(params$biobakery_pipeline == "MetaPhlAn"){
 colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8])
-
+}
 ```
 
-```{r keep samples with read depth of 5 milion or more}
-# ------------------------------------------------------------------------------
-## ---- filter-reads
-# Filter samples with fewer than 5 million processed reads and all-zero features
-# ------------------------------------------------------------------------------
-all_data_merged_more5mil.tse <- all_data_merged.tse[, all_data_merged.tse@colData$reads_processed > 5e6]
+# Filter by prevalence
 
-all_data_merged_more5mil.tse <- all_data_merged_more5mil.tse[rowSums(assay(all_data_merged_more5mil.tse)) > 0, ]
+Before filter
 
+```{r}
+all_data_merged.tse
 ```
+
+After filter
 
 ```{r}
 Input.tse <- subsetByPrevalent(
-  all_data_merged_more5mil.tse,
+  all_data_merged.tse,
   assay.type = "relative_abundance",
   prevalence = params$preval_thresh,
   detection  = params$detect_thresh
 )
+
+Input.tse
 ```
 
-## colData curation
+## Generate `constipation_for_analysis` variable
+
+This had to be done now because 3 out of 4 datasets datasets to analyze constipation
+were not available before now.
+
+First curate a comprehensive constipation variable, this is knowledge based
+work. I will take Asnicar2021 as gold standard and assume of Murchison datasets
+are N = "Normal", Y = "Slow"
 
 ```{r}
-# Binary Parkinson variable (controls may carry other diseases)
-Input.tse@colData$parkinson_for_analysis <- factor(ifelse(grepl("Parkinson", Input.tse@colData$disease), 1, 0))
+# fix empty slots of WallenZD constipation variable
+Input.tse@colData$WallenZD_2022_uncurated_constipation[Input.tse@colData$WallenZD_2022_uncurated_constipation == ""] <- NA 
 
-# Recode missing age_group
-Input.tse@colData$age_group <- factor(ifelse(
-  is.na(Input.tse@colData$age_group),
-  "Unknown",
-  Input.tse@colData$age_group
-))
+# merge WallenZD uncurated constipation into the main Constipation variable
+Input.tse@colData$Constipation <- case_when(is.na(Input.tse@colData$Constipation) ~ Input.tse@colData$WallenZD_2022_uncurated_constipation, TRUE ~ Input.tse@colData$Constipation)
 
-# Number of diseases (including PD)
-Input.tse@colData$number_diseases <- ifelse(
-  Input.tse@colData$disease == "Healthy",
-  0,
-  str_count(Input.tse@colData$disease, ";") + 1
-)
-
-# Country conversion per study
-country_per_study.chr <- c(
-  BedarfJR_2017   = "Germany",
-  BoktorJC_2023   = "USA",
-  BoktorJC_2023.2 = "USA",
-  DuruIC_2024     = "Finland",
-  JoS_2022        = "South Korea",
-  LeeEJ_2024      = "South Korea",
-  MaoL_2021       = "China",
-  NishiwakiH_2024 = "Japan",
-  QianY_2020      = "China",
-  WallenZD_2022   = "Deep South USA",
-  ZhangM_2023     = "China",
-  NGRC            = "USA",
-  UAB             = "Deep South USA"
-)
-
-Input.tse@colData$Country <- country_per_study.chr[Input.tse@colData$study_name]
-```
-
-## Filtering steps into one data.frame
-
-```{r}
-filtering_steps.tb <-
-  rbind(dim(all_data_merged.tse),
-        dim(all_data_merged_more5mil.tse),
-        dim(Input.tse)) %>%
-  set_colnames(c("N Features", "N Samples")) %>%
-  set_rownames(c(
-    "Initial set",
-    "More than 5 M reads processed",
-    "Prevalence and Detection filt"
-  )) %>%
-  as.data.frame() %>%
-  rownames_to_column("Step Name") %>%
-  as_tibble()
-```
-
-## Write the general dataset 
-
-```{r}
-# first curate a comprehensive constipation variable, this is knowledge based
-# work. I will take Asnicar2021 as gold standard and assume of Murchison datasets
-# are N = "Normal", Y = "Slow"
 Input.tse@colData$constipation_for_analysis <- case_when(is.na(Input.tse@colData$Constipation) & is.na(Input.tse@colData$transit_time_cut_classes_definition) ~ NA,
                                                    Input.tse@colData$Constipation == "Y" ~ "Slow",
                                                    Input.tse@colData$transit_time_cut_classes_definition == "Slow" ~ "Slow",
@@ -142,8 +136,16 @@ Input.tse@colData$constipation_for_analysis <- case_when(is.na(Input.tse@colData
                                                    TRUE ~ "Fast"
                                                    )
 
-write_TSE_to_dir(Input.tse, out.dir = sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$pMD_data_type))
+outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", pipeline)
+
+if(params$overwrite_TSE_out == "yes"){
+  unlink(outputName, recursive = TRUE)
+}
+
+write_TSE_to_dir(Input.tse, out.dir = outputName)
 ```
+
+# Code checked until here
 
 ## Write a dataset to be used for the `Parkinson` meta-analysis
 
@@ -151,9 +153,6 @@ write_TSE_to_dir(Input.tse, out.dir = sprintf("~/parkinsonMetaAnalysis_data/03-a
 # Parkinson as target condition
 Input_parkinson.tse <- Input.tse[, Input.tse@colData$target_condition == "Parkinson Disease"]
 Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
-
-## update filtering report
-filtering_steps.tb <- rbind(filtering_steps.tb, c("Has Parkinson as target condition", dim(Input_parkinson.tse)))
 
 # Each dataset should have at least 30 samples in cases and 30 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
@@ -170,21 +169,16 @@ Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse@c
 ## filter all-0 rows again
 Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse)) > 0,]
 
-## update filtering report
-filtering_steps.tb <- rbind(filtering_steps.tb, c("At least 30 cases and 30 controls", dim(Input_parkinson_usableDatasets.tse)))
 
-write_TSE_to_dir(Input_parkinson_usableDatasets.tse, out.dir = sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_PD-%s.tse", params$pMD_data_type))
+# save tse
+outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_PD-%s.tse", pipeline)
+
+if(params$overwrite_TSE_out == "yes"){
+  unlink(outputName, recursive = TRUE)
+}
+write_TSE_to_dir(Input_parkinson_usableDatasets.tse, out.dir = outputName)
 
 Input_parkinson_usableDatasets.tse
-```
-
-## Summary of samples and features lost in each step for Parkinson
-
-```{r}
-filtering_steps.tb %>% 
-  write_tsv("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv")
-
-kable(filtering_steps.tb)
 ```
 
 # Session Info
