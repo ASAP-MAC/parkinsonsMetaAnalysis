@@ -9,20 +9,21 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_pipeline: "MetaPhlAn"
+  biobakery_tool: "MetaPhlAn"
   overwrite_TSE_out: "yes"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
 
 ```{r setup}
-if(!(params$biobakery_pipeline %in% c("MetaPhlAn", "HUMAnN"))){
-  stop("Biobakery pipeline requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
+if(!(params$biobakery_tool %in% c("MetaPhlAn", "HUMAnN"))){
+  stop("Biobakery tool requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
 }
 
 library(knitr)
 library(mia)
 library(biobakeryUtils)
+library(ChocoPhlAnTaxonomies)
 library(tidyverse)
 
 opts_chunk$set(
@@ -36,25 +37,25 @@ output_data.path <- "~/parkinsonMetaAnalysis_data/"
 ```{r dataset name mapping utilities}
 mapping_names.df <- data.frame(
   data_type = c("relative_abundance", "pathabundance_unstratified"),
-  biobakery_pipeline = c("MetaPhlAn", "HUMAnN"),
+  biobakery_tool = c("MetaPhlAn", "HUMAnN"),
   output_name = c("relative_abundance", "pathways")  
 )
 
-pipeline <- params$biobakery_pipeline
-output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_pipeline == pipeline]
-data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_pipeline == pipeline]
+tool <- params$biobakery_tool
+output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_tool == tool]
+data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_tool == tool]
 ```
 
 ```{r load and merge datasets}
 # load datasets
 PD_data.list <- list(
   pMD = read_TSE_from_dir(
-    sprintf(sprintf("%s/01-pMD_datasets/pMD_%s.tse", output_data.path, pipeline))
+    sprintf(sprintf("%s/01-pMD_datasets/pMD_%s.tse", output_data.path, tool))
   ),
   NGRC_UAB = read_TSE_from_dir(
-    sprintf("%s/02-private_local_datasets/Payami/NGRC_UAB_%s.tse/", output_data.path, pipeline)
+    sprintf("%s/02-private_local_datasets/Payami/NGRC_UAB_%s.tse/", output_data.path, tool)
   ),
-  AsnicarF_2021.tse = read_TSE_from_dir(sprintf("%s/02-private_local_datasets/bluePoo/AsnicarF_2021_%s.tse", output_data.path, pipeline))
+  AsnicarF_2021.tse = read_TSE_from_dir(sprintf("%s/02-private_local_datasets/bluePoo/AsnicarF_2021_%s.tse", output_data.path, tool))
 ) %>% 
   # workaround on age being character, not sure why this still happens
   lapply(function(x){
@@ -85,9 +86,12 @@ tmp_relative_abundance.tse <- suppressMessages(reduce(
 all_data_merged.tse <- tmp_counts.tse
 assay(all_data_merged.tse, "relative_abundance") <- assay(tmp_relative_abundance.tse)
 
-# Fix column name casing that mia changes on the SGB column in case of MetaPhlAn
-if(params$biobakery_pipeline == "MetaPhlAn"){
-colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8])
+# MetaPhlAn specific steps
+if(params$biobakery_tool == "MetaPhlAn"){
+  # Fix column name casing that mia changes on the SGB column in case of MetaPhlAn
+  colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8])
+  # replace taxonomy with GTDB taxonomy
+  all_data_merged.tse <- ChocoPhlAnTaxonomies::tse_replace_mpa_with_GTDB_taxonomy(all_data_merged.tse, 202403)
 }
 ```
 
@@ -136,7 +140,7 @@ Input.tse@colData$constipation_for_analysis <- case_when(is.na(Input.tse@colData
                                                    TRUE ~ "Fast"
                                                    )
 
-outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", pipeline)
+outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", tool)
 
 if(params$overwrite_TSE_out == "yes"){
   unlink(outputName, recursive = TRUE)
@@ -171,7 +175,7 @@ Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums
 
 
 # save tse
-outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_PD-%s.tse", pipeline)
+outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/02-dataset_PD-%s.tse", tool)
 
 if(params$overwrite_TSE_out == "yes"){
   unlink(outputName, recursive = TRUE)

@@ -2,13 +2,11 @@
 ```bash
 micromamba activate quarto
 
-# limma
-quarto render 02-PD-metaAnalysis.qmd \
-  -P pMD_data_type:relative_abundance \
-  -P DA_method:limma
-
-# maaslin2
-quarto render 02-PD-metaAnalysis.qmd \
--P pMD_data_type:relative_abundance \
--P DA_method:limma
+for tool in MetaPhlAn HUMAnN;
+do
+  cp "02-PD-metaAnalysis.qmd" "02-PD-metaAnalysis_${tool}.qmd"
+  quarto render "02-PD-metaAnalysis_${tool}.qmd" \
+    -P "biobakery_tool:${tool}"
+  rm "02-PD-metaAnalysis_${tool}.qmd"
+done
 ```

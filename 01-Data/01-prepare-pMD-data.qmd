@@ -9,13 +9,13 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_pipeline: "MetaPhlAn"
+  biobakery_tool: "MetaPhlAn"
   overwrite_TSE_out: "yes"
 ---
 
 ```{r setup}
-if(!(params$biobakery_pipeline %in% c("MetaPhlAn", "HUMAnN"))){
-  stop("Biobakery pipeline requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
+if(!(params$biobakery_tool %in% c("MetaPhlAn", "HUMAnN"))){
+  stop("Biobakery tool requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
 }
 
 library(knitr) # CRAN
@@ -62,13 +62,13 @@ unstratified pathways.
 ```{r}
 mapping_names.df <- data.frame(
   data_type = c("relative_abundance", "pathabundance_unstratified"),
-  biobakery_pipeline = c("MetaPhlAn", "HUMAnN"),
+  biobakery_tool = c("MetaPhlAn", "HUMAnN"),
   output_name = c("relative_abundance", "pathways")  
 )
 
-pipeline <- params$biobakery_pipeline
-output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_pipeline == pipeline]
-data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_pipeline == pipeline]
+tool <- params$biobakery_tool
+output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_tool == tool]
+data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_tool == tool]
 ```
 
 # Download raw data from `parkinsonsMetagenomicData`
@@ -107,7 +107,7 @@ metadata_datasets_available[, sapply(metadata_datasets_available, function(x) su
   datatable()
 ```
 
-## Download data for `r paste(pipeline, data_type)`
+## Download data for `r paste(tool, data_type)`
 
 ```{r}
 # get the raw data as they come from pMD
@@ -239,12 +239,12 @@ country_per_study.chr <- c(
 parkinsonsMetaAnalysisData_pruned.tse@colData$Country <- country_per_study.chr[parkinsonsMetaAnalysisData_pruned.tse@colData$study_name]
 ```
 
-## Pipeline specific adjustments
+## tool specific adjustments
 
 ```{r}
 parkinsonsMetaAnalysisData_pruned.tse <- pMD_enhance(parkinsonsMetaAnalysisData_pruned.tse, data_type = data_type)
 
-if(pipeline == "MetaPhlAn"){
+if(tool == "MetaPhlAn"){
   # reads_processed as numeric values  
   parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed <- as.numeric(gsub("#([0-9]+).*", 
     "\\1", parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed))
@@ -253,7 +253,7 @@ if(pipeline == "MetaPhlAn"){
   assays(parkinsonsMetaAnalysisData_pruned.tse) <- assays(parkinsonsMetaAnalysisData_pruned.tse)[c(3, 1, 2)]
 }
 
-if(pipeline == "HUMAnN"){
+if(tool == "HUMAnN"){
   # assume some reads processed from the abundances of the pathways
   parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed <- colSums(assay(parkinsonsMetaAnalysisData_pruned.tse))
   
@@ -275,14 +275,14 @@ sample_filtering_steps[["Min. 2M reads processed"]] <- parkinsonsMetaAnalysisDat
 ## Write exclusions as json (list of uuids)
 
 ```{r}
-write_json(sample_filtering_steps, path = sprintf("%s/00-pMD_%s_sample_filtering_steps.json", output_data.path, pipeline))
+write_json(sample_filtering_steps, path = sprintf("%s/00-pMD_%s_sample_filtering_steps.json", output_data.path, tool))
 ```
 
 ## Write TSE file
 
 ```{r, message=TRUE}
 
-fullOutName <- sprintf("%s/pMD_%s.tse", output_data.path, pipeline)
+fullOutName <- sprintf("%s/pMD_%s.tse", output_data.path, tool)
 
 dir.create(fullOutName, showWarnings = FALSE)
 

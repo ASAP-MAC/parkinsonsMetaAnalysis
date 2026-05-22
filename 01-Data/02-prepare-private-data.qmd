@@ -9,13 +9,13 @@ format:
     toc-depth: 2
 editor: source
 params:
- biobakery_pipeline: "MetaPhlAn"
+ biobakery_tool: "MetaPhlAn"
  overwrite_TSE_out: "yes"
 ---
 
 ```{r setup}
-if(!(params$biobakery_pipeline %in% c("MetaPhlAn", "HUMAnN"))){
-  stop("Biobakery pipeline requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
+if(!(params$biobakery_tool %in% c("MetaPhlAn", "HUMAnN"))){
+  stop("Biobakery tool requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
 }
 
 library(knitr) # CRAN
@@ -43,13 +43,13 @@ output_data.path <- "~/parkinsonMetaAnalysis_data/02-private_local_datasets/"
 ```{r dataset name mapping utilities}
 mapping_names.df <- data.frame(
   data_type = c("relative_abundance", "pathabundance_unstratified"),
-  biobakery_pipeline = c("MetaPhlAn", "HUMAnN"),
+  biobakery_tool = c("MetaPhlAn", "HUMAnN"),
   output_name = c("relative_abundance", "pathways")  
 )
 
-pipeline <- params$biobakery_pipeline
-output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_pipeline == pipeline]
-data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_pipeline == pipeline]
+tool <- params$biobakery_tool
+output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_tool == tool]
+data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_tool == tool]
 ```
 
 # Blue Poo dataset
@@ -169,12 +169,12 @@ country_per_study.chr <- c(
 AsnicarF_2021.tse@colData$Country <- country_per_study.chr[AsnicarF_2021.tse@colData$study_name]
 ```
 
-## Pipeline specific adjustments
+## tool specific adjustments
 
 ```{r}
 AsnicarF_2021.tse <- pMD_enhance(AsnicarF_2021.tse, data_type = data_type)
 
-if(pipeline == "MetaPhlAn"){
+if(tool == "MetaPhlAn"){
   # reads_processed as numeric values  
   AsnicarF_2021.tse@colData$reads_processed <- as.numeric(gsub("#([0-9]+).*", 
     "\\1", AsnicarF_2021.tse@colData$reads_processed))
@@ -183,7 +183,7 @@ if(pipeline == "MetaPhlAn"){
   assays(AsnicarF_2021.tse) <- assays(AsnicarF_2021.tse)[c(3, 1, 2)]
 }
 
-if(pipeline == "HUMAnN"){
+if(tool == "HUMAnN"){
   # assume some reads processed from the abundances of the pathways
   AsnicarF_2021.tse@colData$reads_processed <- colSums(assay(AsnicarF_2021.tse))
   
@@ -226,7 +226,7 @@ sample_filtering_steps[["Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UN
 ## Write exclusions as json (list of uuids)
 
 ```{r}
-write_json(sample_filtering_steps, path = sprintf("%s/../00-AsnicarF_2021_%s_sample_filtering_steps.json", bluePoo.path, pipeline))
+write_json(sample_filtering_steps, path = sprintf("%s/../00-AsnicarF_2021_%s_sample_filtering_steps.json", bluePoo.path, tool))
 ```
 
 ## Write BluePoo (AsnicarF_2021)
@@ -236,7 +236,7 @@ AsnicarF_2021.tse <- AsnicarF_2021.tse[rowSums(assay(AsnicarF_2021.tse)) > 0, ]
 ```
 
 ```{r}
-fullOutName <- file.path(sprintf("%s/../AsnicarF_2021_%s.tse", bluePoo.path, pipeline))
+fullOutName <- file.path(sprintf("%s/../AsnicarF_2021_%s.tse", bluePoo.path, tool))
 
 if(params$overwrite_TSE_out == "yes"){
   unlink(fullOutName, recursive = TRUE)
@@ -247,7 +247,7 @@ write_TSE_to_dir(AsnicarF_2021.tse, out.dir = fullOutName)
 
 # Payami not-yet-public data (NGRC and UAB datasets)
 
-These data were run with the same pipeline but were not included pMD because 
+These data were run with the same tool but were not included pMD because 
 the authors did not publish reads online yet. Having a collaboration, we had 
 official access to the data.
 
@@ -300,7 +300,7 @@ rownames(colData.df) <- colData.df$uuid
 ## bioBakery curation
 
 ```{r}
-if(pipeline == "MetaPhlAn"){
+if(tool == "MetaPhlAn"){
   # load merged input table
   # NB: it is already at SGB level
   input_basic.df <- read_tsv(file.path(PayamiData.path, "relative_abundance.tsv"))
@@ -362,7 +362,7 @@ if(pipeline == "MetaPhlAn"){
 ```
 
 ```{r}
-if(pipeline == "HUMAnN"){
+if(tool == "HUMAnN"){
   input_basic.df <- read_tsv(file.path(PayamiData.path, "pathabundance_unstratified.tsv"))
   
   # make assay-like file
@@ -424,7 +424,7 @@ sample_filtering_steps[["Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UN
 ## Write exclusions as json (list of uuids)
 
 ```{r}
-write_json(sample_filtering_steps, path = sprintf("%s/../00-NGRC_UAB_%s_sample_filtering_steps.json", PayamiData.path, pipeline))
+write_json(sample_filtering_steps, path = sprintf("%s/../00-NGRC_UAB_%s_sample_filtering_steps.json", PayamiData.path, tool))
 ```
 
 ## Write PayamiH TSE
@@ -434,7 +434,7 @@ NGRC_UAB.tse <- NGRC_UAB.tse[rowSums(assay(NGRC_UAB.tse)) > 0,]
 ```
 
 ```{r}
-fullOutName <- sprintf("%s/../NGRC_UAB_%s.tse", PayamiData.path, pipeline)
+fullOutName <- sprintf("%s/../NGRC_UAB_%s.tse", PayamiData.path, tool)
   
 if(params$overwrite_TSE_out == "yes"){
   unlink(fullOutName, recursive = TRUE)
