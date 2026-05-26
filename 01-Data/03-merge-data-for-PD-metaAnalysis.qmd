@@ -34,7 +34,7 @@ sample_filtering_steps <- list()
 output_data.path <- "~/parkinsonMetaAnalysis_data/"
 ```
 
-```{r dataset name mapping utilities}
+```{r dataset name mapping vectors}
 mapping_names.df <- data.frame(
   data_type = c("relative_abundance", "pathabundance_unstratified"),
   biobakery_tool = c("MetaPhlAn", "HUMAnN"),
@@ -99,13 +99,13 @@ if(params$biobakery_tool == "MetaPhlAn"){
 
 Before filter
 
-```{r}
+```{r print dataset before any filter is applied}
 all_data_merged.tse
 ```
 
 After filter
 
-```{r}
+```{r print dataset after prevalence and abundance filters are applied}
 Input.tse <- subsetByPrevalent(
   all_data_merged.tse,
   assay.type = "relative_abundance",
@@ -125,7 +125,7 @@ First curate a comprehensive constipation variable, this is knowledge based
 work. I will take Asnicar2021 as gold standard and assume of Murchison datasets
 are N = "Normal", Y = "Slow"
 
-```{r}
+```{r generate constipation variable}
 # fix empty slots of WallenZD constipation variable
 Input.tse@colData$WallenZD_2022_uncurated_constipation[Input.tse@colData$WallenZD_2022_uncurated_constipation == ""] <- NA 
 
@@ -149,11 +149,9 @@ if(params$overwrite_TSE_out == "yes"){
 write_TSE_to_dir(Input.tse, out.dir = outputName)
 ```
 
-# Code checked until here
-
 ## Write a dataset to be used for the `Parkinson` meta-analysis
 
-```{r}
+```{r filter dataset for parkinson meta-analysis}
 # Parkinson as target condition
 Input_parkinson.tse <- Input.tse[, Input.tse@colData$target_condition == "Parkinson Disease"]
 Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
@@ -172,8 +170,10 @@ Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse@c
 
 ## filter all-0 rows again
 Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse)) > 0,]
+```
 
 
+```{r write dataset for parkinson meta-analysis}
 # save tse
 outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/02-dataset_PD-%s.tse", tool)
 
@@ -185,9 +185,30 @@ write_TSE_to_dir(Input_parkinson_usableDatasets.tse, out.dir = outputName)
 Input_parkinson_usableDatasets.tse
 ```
 
-# Session Info
+## Write a dataset to be used for the `Healthy Constipated` meta-analysis
 
-```{r}
-sessionInfo()
+```{r filter dataset for constipation meta-analysis}
+# filter for disease == Healthy. From 3384 to 1709
+Input_constipation_healthy.tse <- Input.tse[, Input.tse$disease == "Healthy"]
+
+# filter for available constipation information. From 1709 to 1242
+Input_constipation_healthy.tse <- Input_constipation_healthy.tse[,!is.na(Input_constipation_healthy.tse$constipation_for_analysis)]
+
+kable(table(Input_constipation_healthy.tse$study_name, Input_constipation_healthy.tse$constipation_for_analysis, useNA = "always"))
 ```
 
+```{r write dataset for constipation meta-analysis}
+outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/03-dataset_constipation-%s.tse", tool)
+
+if(params$overwrite_TSE_out == "yes"){
+  unlink(outputName, recursive = TRUE)
+}
+
+write_TSE_to_dir(Input_constipation_healthy.tse, outputName)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

@@ -40,7 +40,7 @@ sample_filtering_steps <- list()
 output_data.path <- "~/parkinsonMetaAnalysis_data/02-private_local_datasets/"
 ```
 
-```{r dataset name mapping utilities}
+```{r dataset name mapping vectors}
 mapping_names.df <- data.frame(
   data_type = c("relative_abundance", "pathabundance_unstratified"),
   biobakery_tool = c("MetaPhlAn", "HUMAnN"),
@@ -60,7 +60,7 @@ leave the Unitn server.
 
 ## load pMD dataset `AsnicarF_2021`
 
-```{r}
+```{r download AsnicarF_2021 from parkinsonsMetagenomicData}
 data("sampleMetadata", "parkinsonsMetagenomicData")
 
 AsnicarF_2021.tse <- sampleMetadata[sampleMetadata$study_name == "AsnicarF_2021",] %>% 
@@ -69,7 +69,7 @@ AsnicarF_2021.tse <- sampleMetadata[sampleMetadata$study_name == "AsnicarF_2021"
 sample_filtering_steps[["Unfiltered"]] <- AsnicarF_2021.tse@colData$uuid
 ```
 
-```{r}
+```{r prepare private bluePoo metadata}
 #---------- 2 setup variables
 bluePoo.path <- file.path(output_data.path, "bluePoo", "0-private")
 #get selected variables
@@ -128,7 +128,7 @@ sample_filtering_steps[["Private metadata available"]] <- AsnicarF_2021.tse@colD
 
 ## colData curation
 
-```{r}
+```{r further curate AsnicarF_2021 colData}
 # convert age to numeric
 AsnicarF_2021.tse@colData$age <- as.numeric(AsnicarF_2021.tse@colData$age)
 
@@ -169,9 +169,9 @@ country_per_study.chr <- c(
 AsnicarF_2021.tse@colData$Country <- country_per_study.chr[AsnicarF_2021.tse@colData$study_name]
 ```
 
-## tool specific adjustments
+## biobakery tool-specific curation
 
-```{r}
+```{r AsnicarF improve TSE formatting specific to biobakery tool}
 AsnicarF_2021.tse <- pMD_enhance(AsnicarF_2021.tse, data_type = data_type)
 
 if(tool == "MetaPhlAn"){
@@ -195,21 +195,21 @@ if(tool == "HUMAnN"){
 
 ## Exclude low-reads samples
 
-```{r}
+```{r AsnicarF exclude samples with low sample counts}
 AsnicarF_2021.tse <- AsnicarF_2021.tse[, AsnicarF_2021.tse@colData$reads_processed >= 2e6]
 sample_filtering_steps[["Min. 2M reads processed"]] <- AsnicarF_2021.tse@colData$uuid
 ```
 
 ## Exclude all-0 samples
 
-```{r}
+```{r AsnicarF exclude samples without abundance data}
 AsnicarF_2021.tse <- AsnicarF_2021.tse[, colSums(assay(AsnicarF_2021.tse)) > 0]
 sample_filtering_steps[["Sample abundances not entirely zero"]] <- AsnicarF_2021.tse@colData$uuid
 ```
 
 ## Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UNINTEGRATED
 
-```{r}
+```{r AsnicarF exclude samples with only UNCLASSIFIED or UNMAPPED}
 all_abunds_UN <- sapply(assays(AsnicarF_2021.tse), function(x){
   x2 <- colSums(x[!grepl("UN", rownames(x)),, drop = FALSE]) == 0
   return(x2)
@@ -225,17 +225,15 @@ sample_filtering_steps[["Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UN
 
 ## Write exclusions as json (list of uuids)
 
-```{r}
+```{r AsnicarF write samples retained in each exclusion step}
 write_json(sample_filtering_steps, path = sprintf("%s/../00-AsnicarF_2021_%s_sample_filtering_steps.json", bluePoo.path, tool))
 ```
 
 ## Write BluePoo (AsnicarF_2021)
 
-```{r}
+```{r write TSE of bluePoo}
 AsnicarF_2021.tse <- AsnicarF_2021.tse[rowSums(assay(AsnicarF_2021.tse)) > 0, ]
-```
 
-```{r}
 fullOutName <- file.path(sprintf("%s/../AsnicarF_2021_%s.tse", bluePoo.path, tool))
 
 if(params$overwrite_TSE_out == "yes"){
@@ -251,13 +249,13 @@ These data were run with the same tool but were not included pMD because
 the authors did not publish reads online yet. Having a collaboration, we had 
 official access to the data.
 
-```{r}
+```{r inizialize a new stepwise sample filtering list}
 sample_filtering_steps <- list()
 ```
 
 ## Metadata curation
 
-```{r}
+```{r curate Payami metadata}
 PayamiData.path <- file.path(output_data.path, "Payami", "0-private")
 
 colData.df <- read_tsv(file.path(PayamiData.path, "colData.df.tsv")) %>% 
@@ -266,7 +264,7 @@ colData.df <- read_tsv(file.path(PayamiData.path, "colData.df.tsv")) %>%
   mutate(
     study_name = Dataset,
     age = Age_at_collection,
-    age_group = ifelse(age >= 65, "Elderly", "Adult"),
+    age_group = factor(ifelse(age >= 65, "Elderly", "Adult"), levels = c("Adult", "Elderly", "Unknown")),
     control = ifelse(Case_status == "PD", "Case", "Study Control"),
     sex = ifelse(Sex == "M", "Male", "Female"),
     target_condition = "Parkinson Disease"
@@ -297,9 +295,9 @@ colData.df$parkinson_for_analysis <- factor(ifelse(grepl("Parkinson", colData.df
 rownames(colData.df) <- colData.df$uuid
 ```
 
-## bioBakery curation
+## prepare basic TSE in case of MetaPhlAn
 
-```{r}
+```{r prepare MetaPhlAn TSE}
 if(tool == "MetaPhlAn"){
   # load merged input table
   # NB: it is already at SGB level
@@ -361,7 +359,9 @@ if(tool == "MetaPhlAn"){
 }
 ```
 
-```{r}
+## prepare basic TSE in case of MetaPhlAn
+
+```{r prepare HUMAnN TSE}
 if(tool == "HUMAnN"){
   input_basic.df <- read_tsv(file.path(PayamiData.path, "pathabundance_unstratified.tsv"))
   
@@ -393,21 +393,21 @@ if(tool == "HUMAnN"){
 
 ## Exclude low-reads samples
 
-```{r}
+```{r Payami exclude samples with low sample counts}
 NGRC_UAB.tse <- NGRC_UAB.tse[, NGRC_UAB.tse@colData$reads_processed >= 2e6]
 sample_filtering_steps[["Min. 2M reads processed"]] <- NGRC_UAB.tse@colData$uuid
 ```
 
 ## Exclude all-0 samples
 
-```{r}
+```{r Payami exclude samples without abundance data}
 NGRC_UAB.tse <- NGRC_UAB.tse[, colSums(assay(NGRC_UAB.tse)) > 0]
 sample_filtering_steps[["Sample abundances not entirely zero"]] <- NGRC_UAB.tse@colData$uuid
 ```
 
 ## Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UNINTEGRATED
 
-```{r}
+```{r Payami exclude samples with only UNCLASSIFIED or UNMAPPED}
 all_abunds_UN <- sapply(assays(NGRC_UAB.tse), function(x){
   x2 <- colSums(x[!grepl("UN", rownames(x)),, drop = FALSE]) == 0
   return(x2)
@@ -423,17 +423,15 @@ sample_filtering_steps[["Sample abundances not entirely UNCLASSIFIED|UNMAPPED|UN
 
 ## Write exclusions as json (list of uuids)
 
-```{r}
+```{r Payami write samples retained in each exclusion step}
 write_json(sample_filtering_steps, path = sprintf("%s/../00-NGRC_UAB_%s_sample_filtering_steps.json", PayamiData.path, tool))
 ```
 
 ## Write PayamiH TSE
 
-```{r}
+```{r write Payami TSE data}
 NGRC_UAB.tse <- NGRC_UAB.tse[rowSums(assay(NGRC_UAB.tse)) > 0,]
-```
 
-```{r}
 fullOutName <- sprintf("%s/../NGRC_UAB_%s.tse", PayamiData.path, tool)
   
 if(params$overwrite_TSE_out == "yes"){
