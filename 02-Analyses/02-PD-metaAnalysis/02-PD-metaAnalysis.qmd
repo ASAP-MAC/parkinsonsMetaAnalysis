@@ -148,7 +148,7 @@ meta_analyses_at_a_glance <- list(
   lapply(metaAnalysis_glance) %>% 
   reduce(full_join, by = c("result_name", "result_condition"),suffix = c("_limma", "_maaslin2"))
 
-meta_analyses_at_a_glance
+kable(meta_analyses_at_a_glance)
 ```
 
 # Write results
