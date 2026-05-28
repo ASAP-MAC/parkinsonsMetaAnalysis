@@ -120,13 +120,19 @@ sample_filtering_steps[["Retrieved from pMD"]] <- parkinsonsMetaAnalysisData.tse
 ## Split Boktor JC into 2 studies according to the BioProject ID
 
 ```{r split boktor}
+# split boktor study_name variable
 tmp <- parkinsonsMetaAnalysisData.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
   mutate(
     study_name = gsub("\\.1$", "", paste(study_name, as.integer(as.factor(BioProject)), sep = "."))
   ) %>% 
-  ungroup()
+  ungroup() %>% 
+  # coalesce two bristol stool scale variables giving priority to the variable 
+  # assessed by researchers.
+  mutate(
+    BoktorJC_2023_uncurated_bristol_stool_scale2 =
+      coalesce(BoktorJC_2023_uncurated_bristol_stool_scale, BoktorJC_2023_uncurated_Bristol_stool_scale))
 
 # Re-fix rownames
 rownames(tmp) <- tmp$uuid

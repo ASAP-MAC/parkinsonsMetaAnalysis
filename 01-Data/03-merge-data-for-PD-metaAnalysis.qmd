@@ -59,7 +59,7 @@ PD_data.list <- list(
 ) %>% 
   # workaround on age being character, not sure why this still happens
   lapply(function(x){
-   x@colData$age <- as.numeric(x@colData$age)
+   x$age <- as.numeric(x$age)
     return(x)
   }
     )
@@ -118,28 +118,126 @@ Input.tse
 
 ## Generate `constipation_for_analysis` variable
 
-This had to be done now because 3 out of 4 datasets datasets to analyze constipation
+This had to be done now because 3 out of 5 datasets to analyze constipation
 were not available before now.
 
-First curate a comprehensive constipation variable, this is knowledge based
-work. I will take Asnicar2021 as gold standard and assume of Murchison datasets
-are N = "Normal", Y = "Slow"
+**AsnicarF_2021** is the gold standard, with a pre-set definition: `Normal`, 
+`Fast`, `Slow`.
+
+**Payami** private datasets have Constipation defined as yes/no answer to the 
+question "have you been constipated in the 3 months before stool collection?".
+Here, the values are converted as:
+  - Slow: Constipation == "Y"
+  - Normal: Constipation == "N"
+  - Fast: NA (not defined by the variable)
+
+**NishiwakiH_2024** also has a proxy for constipation, `stool_frequency`, 
+measured as number of bowel movements per week (BMPW). According to 
+[Walter et al. (2010)](https://doi.org/10.3109/00365520903551332), this variable
+can be cut as follows:
+  
+  - Slow: $BMPW < 3$
+  - Normal: $3\leqslant BMPW \leqslant 21$
+  - Fast: $BMPW \geq 21$
+
+**BoktorJC_2023** has a Bristol stool scale variable. It can be categorized into
+stool with different moisture. Less moisture tends to correlate with slow transit
+time, which increases the readsorption.The variable to curate constipation is 
+`BoktorJC_2023_uncurated_bristol_stool_scale2`, generate in the 01-... script.
+
+This is derived from two uncurated variables.
+
+  - BoktorJC_2023_uncurated_bristol_stool_scale
+  - BoktorJC_2023_uncurated_Bristol_stool_scale
+  
+The first one is more reliable, described by researchers. In those few cases 
+where the second variable has values and the 1st doesn't, values from the 2nd 
+are taken.
+
+Bristol stool scores can be grouped as follows according to slow or constipation
+according to[Orozco et al., 2024](https://doi.org/10.14309/ajg.0000000000003218):
+
+  - Slow (constipation): $Bristol \leqslant 2$
+  - Normal: $3 \leqslant Bristol \leqslant 5$
+  - Fast (diarrhea): $6 \leqslant Bristol \leqslant 7$
+
+Boktor also has a `constipation_problems` coming from the UPDRS-II questionnaire.
+It ranges from 0 (normal) to 4 (severe).
+
+An overarching constipation variable is then derived from the two above, in which
+if either reaches constipation levels, the sample is defined constipated.
+
+Many variables with different scales and meanings are harmonized together. To 
+be cautious on the definition resulting from this grouping, the Asnicar/bluePoo
+definitions are applied.
+
 
 ```{r generate constipation variable}
 # fix empty slots of WallenZD constipation variable
-Input.tse@colData$WallenZD_2022_uncurated_constipation[Input.tse@colData$WallenZD_2022_uncurated_constipation == ""] <- NA 
+Input.tse$WallenZD_2022_uncurated_constipation[Input.tse$WallenZD_2022_uncurated_constipation == ""] <- NA 
 
 # merge WallenZD uncurated constipation into the main Constipation variable
-Input.tse@colData$Constipation <- case_when(is.na(Input.tse@colData$Constipation) ~ Input.tse@colData$WallenZD_2022_uncurated_constipation, TRUE ~ Input.tse@colData$Constipation)
+# coming from the Payami datasets (Wallen, NGRC, UAB)
+Input.tse$Constipation <- case_when(is.na(Input.tse$Constipation) ~ Input.tse$WallenZD_2022_uncurated_constipation, TRUE ~ Input.tse$Constipation)
 
-Input.tse@colData$constipation_for_analysis <- case_when(is.na(Input.tse@colData$Constipation) & is.na(Input.tse@colData$transit_time_cut_classes_definition) ~ NA,
-                                                   Input.tse@colData$Constipation == "Y" ~ "Slow",
-                                                   Input.tse@colData$transit_time_cut_classes_definition == "Slow" ~ "Slow",
-                                                   Input.tse@colData$Constipation == "N" ~ "Normal",
-                                                   Input.tse@colData$transit_time_cut_classes_definition == "Normal" ~ "Normal",
-                                                   TRUE ~ "Fast"
-                                                   )
+# create one intermediate constipation_payami variable
+Input.tse$constipation_payami <- case_when(
+  Input.tse$Constipation == "Y" ~ "Slow", 
+  Input.tse$Constipation == "N" ~ "Normal", 
+  TRUE ~ NA
+  )
 
+Input.tse$constipation_for_analysis <- case_when(
+  is.na(Input.tse$Constipation) &
+    is.na(Input.tse$transit_time_cut_classes_definition) ~ NA,
+  Input.tse$Constipation == "Y" ~ "Slow",
+  Input.tse$transit_time_cut_classes_definition == "Slow" ~ "Slow",
+  Input.tse$Constipation == "N" ~ "Normal",
+  Input.tse$transit_time_cut_classes_definition == "Normal" ~ "Normal",
+  TRUE ~ "Fast"
+)
+
+# Create Boktor intermediate constipation into constipation_for_analysis
+## 1 - group bristol scores
+Input.tse$boktor_constipation_bristol <- case_when(
+  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 <= 2 ~ "Slow",
+  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 2 ~ "Normal",
+  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 5 ~ "Fast",
+  TRUE ~ Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2
+)
+
+## 2 - make an OR statement with variable just created and 
+Input.tse$boktor_constipation_updrs <- case_when(
+  as.integer(Input.tse$BoktorJC_2023_uncurated_constipation_problems) <= 1 ~ "Normal",
+  as.integer(Input.tse$BoktorJC_2023_uncurated_constipation_problems) > 1 ~ "Slow",
+  TRUE ~ NA
+)
+
+# coalesce Boktor constipation variables together
+Input.tse$boktor_constipation <- coalesce(Input.tse$constipation_for_analysis, Input.tse$boktor_constipation_updrs)
+
+# merge boktor into constipation_for_analysis
+Input.tse$constipation_for_analysis <- coalesce(Input.tse$boktor_constipation_bristol, Input.tse$boktor_constipation)
+
+# merge Nishiwaki stool_frequency into the main constipation_for_analysis:
+## 1 - Curate nishiwaki constipation from the stool frequency
+Input.tse$constipation_nishiwaki <-  case_when(
+  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) < 3 ~ "Slow",
+  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 3 ~ "Normal",
+  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 21 ~ "Fast",
+  TRUE ~ NA)
+
+# make the variable a factor with Normal as baseline
+Input.tse$constipation_for_analysis <- coalesce(Input.tse$constipation_for_analysis, Input.tse$constipation_nishiwaki)
+
+Input.tse$constipation_for_analysis <- factor(Input.tse$constipation_for_analysis, levels = c("Normal", "Fast", "Slow"))
+
+kable(table(Input.tse$constipation_for_analysis, Input.tse$parkinson_for_analysis))
+```
+
+## Write the complete dataset 
+
+```{r write complete dataset}
 outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", tool)
 
 if(params$overwrite_TSE_out == "yes"){
@@ -153,7 +251,7 @@ write_TSE_to_dir(Input.tse, out.dir = outputName)
 
 ```{r filter dataset for parkinson meta-analysis}
 # Parkinson as target condition
-Input_parkinson.tse <- Input.tse[, Input.tse@colData$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
 Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
 
 # Each dataset should have at least 30 samples in cases and 30 in controls
@@ -161,12 +259,12 @@ ok_datasets <- Input_parkinson.tse@colData %>%
   as.data.frame() %>% 
   group_by(study_name) %>% 
   filter(
-    sum(parkinson_for_analysis == 0) > 30,
-    sum(parkinson_for_analysis == 1) > 30
+    sum(parkinson_for_analysis == 0) > 10,
+    sum(parkinson_for_analysis == 1) > 10
   )
 
 ## filter TSE to restrict to 'ok' datasets 
-Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse@colData$study_name %in% unique(ok_datasets$study_name)]
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
 ## filter all-0 rows again
 Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse)) > 0,]
