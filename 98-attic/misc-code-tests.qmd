@@ -5,7 +5,7 @@ format:
   html:
     embed-resources: true
     toc: true
-editor: visual
+editor: source
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
@@ -21,15 +21,17 @@ knitr::opts_chunk$set(
   message = FALSE, 
   warning = FALSE
 )
+
+data("sampleMetadata", package = "parkinsonsMetagenomicData")
 set.seed(1234)
 theme_set(theme_bw())
 ```
 
 # `limma` produces almost identical statistics as `lm` but it's more efficient
 
--   Dataset: WallenZD_2022
--   transformation: $arcsin(\sqrt{relative~abundance}$
--   limma used directly with lmFit, no voom transformation applied
+- Dataset: WallenZD_2022
+- transformation: $arcsin(\sqrt{relative~abundance}$
+- limma used directly with lmFit, no voom transformation applied
 
 ```{r}
 wallenZD_2022_raw.tse <- sampleMetadata %>% 
@@ -142,7 +144,6 @@ rbind(
   relocate(Implementation)
 ```
 
-
 # 5% prevalence cutoff per dataset or across all, what is the effect?
 
 ```{r}
@@ -182,4 +183,3 @@ sum(rowSums(prevalences_mtx >= 0.05) == ncol(prevalences_mtx))
 ```{r}
 sessionInfo()
 ```
-
