@@ -1,0 +1,319 @@
+---
+title: "Figure 3 - Constipation"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "HUMAnN"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+```{r setup}
+library(tidyverse)
+library(ggpubr)
+library(biobakeryUtils)
+library(TreeSummarizedExperiment)
+library(rstatix)
+
+# set a ggplot2 overall theme
+theme_set(theme_bw())
+
+# infer the tested unit from the biobakery tool
+tested_unit <- ifelse(params$biobakery_tool == "MetaPhlAn", "SGB", "pathway")
+
+# initialize palettes
+palette_constipation <- c(Fast = "#CFB267FF", Normal = "gray70", Slow = "#5480B5FF")
+
+# load full data
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+# initialize path where to retrieve and write results
+results_dir <- file.path("..", "02-Analyses", "results")
+```
+ 
+```{r read and incorporate constipation score}
+# load per-subject constipation scores
+constipation_scores <- read_tsv(file.path("..", "05-Supplements", "Supplementary Tables", sprintf("constipation_score_%s.tsv", params$biobakery_tool)))
+
+full_metadata.df <- as.data.frame(colData(Input.tse)) %>% 
+  dplyr::left_join(constipation_scores, by = "uuid")
+```
+
+# Figure 3 - Constipation figure (MetaPhlAn)
+
+## Panel A - AUC constipation score in Asnicar
+
+```{r prepare asnicar data for plot}
+asnicar_data_for_plot <- full_metadata.df %>% 
+  filter(study_name == "AsnicarF_2021") %>% 
+  mutate(constipation_for_analysis = relevel(constipation_for_analysis, "Fast"))
+```
+
+```{r asnicar scatterplot of scores}
+asnicar_validation_scatterplot_scores.gg <- asnicar_data_for_plot %>% 
+  ggplot(aes(x = constipation_score1, constipation_score2)) + 
+  geom_point(pch = 21, fill = "gray70", color = "black") + 
+  geom_smooth(method = "lm", formula = "y~x", mapping = aes(group = 1), show.legend = FALSE, color = "black") + 
+  stat_cor(method = "pearson", mapping = aes(group = 1), show.legend = FALSE) + 
+  labs(
+    x = "Constipation Score",
+    y = "Constipation Score Weighted"
+  )
+
+asnicar_validation_scatterplot_scores.gg
+```
+
+```{r asnicar score 1 by constipation class}
+# pairwise AUC helper, using pROC for ROC curve calculation
+pairwise_auc <- function(data, group_var, value_var) {
+  groups <- levels(droplevels(data[[group_var]]))
+  combn(groups, 2, function(pair) {
+    sub <- data[data[[group_var]] %in% pair, ]
+    resp <- factor(sub[[group_var]], levels = pair)  # pair[1] = control, pair[2] = case
+    roc_obj <- pROC::roc(
+      response  = resp,
+      predictor = sub[[value_var]],
+      levels    = pair,
+      direction = "<",   # enforce P(score | pair[2]) > P(score | pair[1]); flip if you want the opposite convention
+      quiet     = TRUE
+    )
+    data.frame(group1 = pair[1], group2 = pair[2], AUC = as.numeric(pROC::auc(roc_obj)))
+  }, simplify = FALSE) %>% bind_rows()
+}
+
+# calculate asnicar significance levels with rstatix for plotting
+asnicar_signif <- asnicar_data_for_plot %>% 
+  pairwise_wilcox_test(formula = constipation_score1 ~ constipation_for_analysis) %>% 
+  add_xy_position()
+
+auc_df <- pairwise_auc(asnicar_data_for_plot, group_var = "constipation_for_analysis", value_var = "constipation_score1")
+
+# keep rstatix's xmin/xmax/y.position, just replace the label
+asnicar_signif_auc <- asnicar_signif %>%
+  dplyr::left_join(auc_df, by = c("group1", "group2")) %>%
+  mutate(AUC_label = sprintf("AUC=%.2f", AUC))
+
+# make plot with AUC instead of Wilcoxon p-values
+asnicar_validation_boxplots_score1.gg <- asnicar_data_for_plot %>%
+  ggplot(
+    aes(x = constipation_for_analysis, color = constipation_for_analysis, y = constipation_score1)
+  ) +
+  ggbeeswarm::geom_beeswarm(
+    cex = 1.5,
+    dodge.width = 0.75,
+    method = "compactswarm",
+    corral = "gutter"
+  ) +
+  geom_boxplot(
+    fill = "white",
+    alpha = 0.6,
+    outliers = FALSE,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = palette_constipation) +
+  stat_pvalue_manual(
+    data = asnicar_signif_auc,
+    label = "AUC_label",
+    step.increase = 0.05,
+    tip.length = 0.01
+  ) +
+  labs(
+    x = "Transit Time Group",
+    y = "Constipation Score",
+    color = "Transit Time Group"
+  )
+
+asnicar_validation_boxplots_score1.gg
+
+```
+
+```{r, panel of 4 test datasets}
+# Filter data to keep samples with constipation information in any dataset
+full_metadata_constipation.df <- full_metadata.df %>% 
+  filter(!is.na(constipation_for_analysis), study_name != "AsnicarF_2021") 
+
+# table(PD_and_constip_datasets.tse$study_name, PD_and_constip_datasets.tse$constipation_for_analysis, useNA = "always")
+# table(PD_and_constip_datasets.tse$study_name, PD_and_constip_datasets.tse$parkinson_for_analysis, useNA = "always")
+
+plots_gg.list <- sapply(unique(full_metadata_constipation.df$study_name), function(ds) {
+    plot_scores.list <- map(1:2, function(i) {
+      # data
+      data <- full_metadata_constipation.df %>% 
+        filter(study_name == ds)
+      
+      # AUC stats
+      stats <- data %>%
+        dplyr::group_by(parkinson_for_analysis) %>%
+        reframe(
+          # AUC where normal becomes 1 (reference) and slow becomes 3 (predicted class)
+          AUC = as.double(pROC::roc(
+              response = constipation_for_analysis,
+              predictor = !!sym(paste0("constipation_score", i)), levels = c("Normal", "Slow")
+            )$auc),
+          y = max(!!sym(paste0(
+            "constipation_score", i
+          ))),
+          y = y * 1.1
+        )
+      
+      # plot
+      ggplot(
+        data,
+        aes(
+          x = parkinson_for_analysis,
+          color = constipation_for_analysis,
+          y = !!sym(paste0("constipation_score", i))
+        )
+      ) +
+        ggbeeswarm::geom_beeswarm(cex = 1.5,
+                                  dodge.width = 0.75,
+                                  method = "compactswarm") +
+        geom_boxplot(
+          fill = "white",
+          alpha = 0.6,
+          outliers = FALSE,
+          show.legend = FALSE
+        ) +
+        geom_text(
+          data = stats,
+          mapping = aes(
+            x = parkinson_for_analysis,
+            y = y,
+            label = sprintf("AUC=%.2f", AUC)
+          ),
+          color = "black"
+        ) +
+        scale_color_manual(values = palette_constipation) +
+        theme(legend.position = "top") +
+        labs(
+          x = "PD Status",
+          y = "Constipation Score",
+          color = "Constipation",
+          title = ds,
+          subtitle = paste("score", i)
+        ) %>%
+        return()
+    })
+    
+    return(plot_scores.list)
+  }, USE.NAMES = TRUE, simplify = FALSE) %>% suppressMessages()
+  
+```
+
+```{r}
+score1_panel.gg <- ggarrange(plotlist = lapply(plots_gg.list, "[[", 1), common.legend = TRUE)
+score1_panel.gg
+```
+
+```{r}
+score2_panel.gg <- ggarrange(plotlist = lapply(plots_gg.list, "[[", 2), common.legend = TRUE)
+score2_panel.gg
+```
+
+## Panel B - Mediation scatterplot
+
+```{r}
+results_clean <- read_tsv(file.path(results_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
+
+wallen_PD_Control_DA <- read_tsv(file.path(results_dir, "02-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
+  filter(study_name == "WallenZD_2022")
+# naming exception that I couldn't harmonize upstream yet
+if(tested_unit == "pathway"){
+  wallen_PD_Control_DA$pathway <- wallen_PD_Control_DA$metacyc_code_safename
+}
+
+# merge meta-analysis with mediation analysis results
+wallen_PD_Control_DA_with_mediation <- dplyr::full_join(wallen_PD_Control_DA, results_clean, by = tested_unit)
+
+# remove 54 features (216 lines) that were tested in PD-Control meta-analyis but not during constipation mediation
+wallen_PD_Control_DA_with_mediation <- wallen_PD_Control_DA_with_mediation[complete.cases(wallen_PD_Control_DA_with_mediation),]
+
+# Scatterplot of mediation effect vs Betas obtained during meta-analysis
+# in wallen (not the same sample set, due to NAs in the constipation variable)
+mediation_vs_DA_beta_scatter <- wallen_PD_Control_DA_with_mediation %>% 
+  filter(!grepl("Prop", Effect)) %>% 
+  ggplot(aes(x = Beta, y = Estimate, color = Effect)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", show.legend = FALSE, formula = 'y~x') +
+  scale_color_manual(values = c("red3", "gray", "black"))+
+  theme(legend.position = "top") +
+  labs(
+    x = "Betas (PD) from meta-analysis",
+    y = "Betas (PD) from mediation analysis"
+  )
+
+mediation_vs_DA_beta_scatter
+```
+
+
+```{r prop mediation histogram}
+signif_features_DA_wallen <- wallen_PD_Control_DA %>% 
+  filter(P.Value.adj < 0.1) %>% 
+  pluck(tested_unit)
+
+data_for_histogram <- wallen_PD_Control_DA_with_mediation %>% 
+  pivot_wider(names_from = "Effect", values_from = c(Estimate, P.value,CI_Lower_95, CI_Upper_95)) %>% 
+  mutate(
+    total_eff_P_categ = cut(`P.value_Total Effect`, breaks = c(1, 0.5, 0.2, 0.1, 0.05, 0.01, 0.001, 0), include.lowest = TRUE),
+    total_eff_P_categ_2 = cut(`P.value_Total Effect`, breaks = c(1, 0.05, 0), include.lowest = TRUE),
+    signif_meta_analysis = !!sym(tested_unit) %in% signif_features_DA_wallen
+  )
+
+prop_mediated_histogram <- data_for_histogram %>% 
+  ggplot(aes(x = `Estimate_Prop. Mediated`, fill = signif_meta_analysis)) + 
+  #ggplot(aes(x = `Estimate_Prop. Mediated`, fill = ifelse(sign(`Estimate_Total Effect`) < 0, "Increased", "Decreased"))) + 
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("gray70", "white")) + 
+  xlim(-2,2) +
+  geom_vline(xintercept = 0, color = "black") +
+  theme(legend.position = "top") +
+  labs(
+    x = "Proportion of Mediated Effect",
+    y = "Density",
+    fill = "Direction of association with PD"
+  )
+
+prop_mediated_histogram
+```
+
+## Figure 3 panel complete
+
+```{r}
+
+# constipation score
+top_piece <- ggarrange( 
+  # asnicar validation boxplot
+  asnicar_validation_boxplots_score1.gg,
+  # BoktorJC validation boxplot
+  plots_gg.list$BoktorJC_2023[[1]] + 
+              theme(legend.position = "none") + 
+              labs(title = NULL, subtitle = "BoktorJC_2023"),  
+  # wallenZD validation boxplot
+  plots_gg.list$WallenZD_2022[[1]] + 
+              theme(legend.position = "none") + 
+              labs(title = NULL, subtitle = "WallenZD_2022"),
+  # final panel setup
+  common.legend = TRUE, nrow = 1, align = "h", labels = letters[1:3])
+
+# bottom piece, mediation
+bottom_piece <- ggarrange(mediation_vs_DA_beta_scatter,prop_mediated_histogram, common.legend = TRUE, labels = letters[4:5])
+
+# assemble panel
+Figure_3_panel <- ggarrange(top_piece, bottom_piece, nrow = 2, heights = c(1, 0.9))
+
+Figure_3_panel
+
+ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure3-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
+```
+
+# Session info
+
+```{r session info}
+sessionInfo()
+```

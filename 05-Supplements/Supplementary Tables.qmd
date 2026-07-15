@@ -1,0 +1,35 @@
+---
+title: "Supplementary Tables"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+library(tidyverse)
+suppTabIndex <- 1
+outdir <- "Supplementary Tables"
+dir.create(outdir)
+```
+
+## Supplementary Table `r suppTabIndex` - step by step feature and sample exclusions
+
+```{r}
+invisible(file.copy("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv", sprintf("%s/Table S%s - step by step feature and sample exclusions.tsv", outdir, suppTabIndex)))
+
+suppTabIndex <- suppTabIndex + 1
+          
+```
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+

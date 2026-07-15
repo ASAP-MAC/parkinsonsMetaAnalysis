@@ -1,0 +1,58 @@
+---
+title: "ML results discussion"
+format: html
+---
+
+```{r}
+library(tidyverse)
+
+ranger_relative_abundance <- read_tsv("../02-Analyses/results/03-RF-LODO-PD-vs-Control/MetaPhlAn/rf_results-PD_ctrl-LODO_ranger_relative_abundance.tsv")
+ranger_voom <- read_tsv("../02-Analyses/results/03-RF-LODO-PD-vs-Control/MetaPhlAn/rf_results-PD_ctrl-LODO_ranger_voom.tsv")
+```
+
+## Classification with `relative_abundace` returns higher AUCs
+
+But `lm` trend between them is not singificant
+
+```{r}
+rf_results_joined.df <- full_join(ranger_voom, ranger_relative_abundance, by = "TestDataset", suffix = c(".voom", ".relative_abundance"))
+
+rf_results_joined.df %>% 
+  ggplot(aes(x = AUROC.relative_abundance, y = AUROC.voom)) + 
+  geom_point() + 
+  xlim(0.3,1) + 
+  ylim(0.3,1) + 
+  geom_abline(intercept = 0, slope = 1, col = "gray", lty = "dashed") + 
+  ggrepel::geom_text_repel(aes(label = TestDataset)) + 
+  geom_hline(yintercept = 0.5, color = 'gray') +
+  geom_vline(xintercept = 0.5, color = 'gray')
+```
+
+```{r}
+ranger_relative_abundance <- read_tsv("../02-Analyses/results/03-RF-LODO-PD-vs-Control/HUMAnN/rf_results-PD_ctrl-LODO_ranger_relative_abundance.tsv")
+ranger_voom <- read_tsv("../02-Analyses/results/03-RF-LODO-PD-vs-Control/HUMAnN/rf_results-PD_ctrl-LODO_ranger_voom.tsv")
+
+rf_results_joined.df <- full_join(ranger_voom, ranger_relative_abundance, by = "TestDataset", suffix = c(".voom", ".relative_abundance"))
+
+rf_results_joined.df %>% 
+  ggplot(aes(x = AUROC.relative_abundance, y = AUROC.voom)) + 
+  geom_point() + 
+  xlim(0.3,1) + 
+  ylim(0.3,1) + 
+  geom_abline(intercept = 0, slope = 1, col = "gray", lty = "dashed") + 
+  ggrepel::geom_text_repel(aes(label = TestDataset)) + 
+  geom_hline(yintercept = 0.5, color = 'gray') +
+  geom_vline(xintercept = 0.5, color = 'gray')
+```
+
+
+```{r}
+rf_results_joined.df %>% 
+  arrange(desc(AUROC.relative_abundance)) %>% 
+  transmute(
+  TestDataset,
+  AUC = sprintf("%.2f [%.2f,%.2f]", AUROC.relative_abundance, AUROC_lowerCI.relative_abundance, AUROC_upperCI.relative_abundance),
+  `P-value` = format(p_value_wilcox.relative_abundance, scientific = TRUE, digits = 1)) %>% 
+  kable() %>% kableExtra::kable_styling(full_width = FALSE)
+```
+

@@ -1,0 +1,158 @@
+---
+title: "Suppelementary Figures"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  pMD_data_type: "relative_abundance"
+  pseudocount: 1e-8
+  transform: "asin_sqrt"
+  prevalThresh: 0.05
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(magrittr)
+library(tidyverse)
+library(parkinsonsMetagenomicData)
+library(ggtext)
+
+library(ggpubr)
+library(meta)
+
+# for table visualizations
+library(DT)
+library(kableExtra)
+
+library(biobakeryUtils)
+theme_set(theme_bw())
+
+# create base directory output
+outdir <- sprintf("SupplementaryFigures-%s", params$pMD_data_type)
+dir.create(outdir, recursive = TRUE)
+
+# generate an incremental figure index
+suppFigIndx <- 1
+```
+
+## Load and further curate data
+
+```{r, cache=TRUE}
+all_data.list <- list(
+  Input.tse = read_TSE_from_dir(sprintf("../01-Data/parkinsonsMetagenomicData/pMD_%s.tse", params$pMD_data_type)),
+  NGRC.tse = read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_privateData/Payami_unpublished/NGRC_%s.tse", params$pMD_data_type)),
+  UAB.tse = read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_privateData/Payami_unpublished/UAB_%s.tse", params$pMD_data_type))
+  ) %>% 
+  lapply(function(x) {
+    x@colData$reads_processed <- as.numeric(x@colData$reads_processed)
+    return(x)
+  }
+    )
+
+# merge all data and fix colData discrepancies  
+all_data_merged.tse <- reduce(all_data.list, mergeSEs, assay.type = "relative_abundance", missing.values = 0, collapse.rows = TRUE)
+
+# fix column changes that mia deliberately makes to the SGB column
+colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8]) 
+
+# filter samples with less than 5 million processed reads
+all_data_merged_more5mil.tse <- all_data_merged.tse[, all_data_merged.tse@colData$reads_processed > 5e6]
+
+# remove all-0 features
+all_data_merged_more5mil.tse <- all_data_merged_more5mil.tse[rowSums(assay(all_data_merged_more5mil.tse)) > 0,]
+
+rbind(dim(all_data_merged.tse), dim(all_data_merged_more5mil.tse)) %>% 
+  set_colnames(c("N Features", "N Samples")) %>% 
+  set_rownames(c("Initial set", "More than 5 M reads processed"))
+
+```
+
+## Supplementary Figure `r suppFigIndx` - Prevalence and detection filters
+
+```{r}
+preval_curve.df <- data.frame(
+  preval_thr = seq(0, 0.9, 0.005),
+  nFeatures = sapply(seq(0, 0.9, 0.005), function(thr) {
+    return(nrow(subsetByPrevalent(all_data_merged_more5mil.tse, assay.type = "relative_abundance", prevalence = thr, detection = 0)))  
+})
+)
+
+prevalence_curve.gg <- preval_curve.df %>% 
+  ggplot(aes(x = preval_thr*100, y = nFeatures)) + 
+  geom_point() + 
+  geom_line(aes(group =1)) + 
+  geom_vline(xintercept = 5, color = "red2") + 
+  labs(
+    title = "Prevalence curve flattens at 5% prevalence",
+    subtitle = "Prevalence threshold of 5% was chosen",
+    y = "N Features retained by filter",
+    x = "Prevalence (%)"
+  )
+
+#--------------------------- same test but with detection
+
+detect_curve.df <- data.frame(
+  detection_thr = 10^-c(8:1),
+  nFeatures = sapply(10^-c(8:1), function(thr) {
+    return(nrow(subsetByPrevalent(all_data_merged_more5mil.tse, assay.type = "relative_abundance", prevalence = 0, detection = thr)))  
+})
+)
+
+detection_curve.gg <- detect_curve.df %>% 
+  ggplot(aes(x = detection_thr*100, y = nFeatures)) + 
+  geom_point() + 
+  geom_line(aes(group =1)) + 
+  scale_x_log10() + 
+  geom_vline(xintercept = 1e-4, color = "red2") + 
+  labs(
+    title = "Detection threshold starts to matter at ~ 1%",
+    subtitle = "Detection threshold of 1e-4 was chosen",
+    y = "N Features retained by filter",
+    x = "Detection minimum abundance ([0-1])"
+  )
+
+preval_detect_plots.gg <- ggarrange(prevalence_curve.gg, detection_curve.gg)
+
+
+ggsave(plot = preval_detect_plots.gg, filename = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.svg", outdir, suppFigIndx))
+
+suppFigIndx <- suppFigIndx + 1
+preval_detect_plots.gg
+
+```
+
+### Attempt 2 - per-dataset prevalence in each dataset > 1% at any detection limit
+
+```{r}
+tmp <- all_data_merged_more5mil.tse %>% 
+  splitOn("study_name")
+
+tmp2 <- tmp %>% lapply(subsetByPrevalent, assay.type = "relative_abundance", prevalence = 0.01, detection = 0)
+
+# for the "in each dataset" rule, we need to manually calculate the intersection
+intersection_features <- tmp2 %>% lapply(rownames) %>% reduce(intersect)
+ 
+tmp3 <- reduce(tmp2, mergeSEs, assay.type = "relative_abundance", collapse.rows = TRUE, missing.values = 0)[intersection_features,]
+tmp3 <- tmp3[rowSums(assay(tmp3)) > 0,]
+tmp3
+```
+
+This produces a much smaller set of features to test. Worth keeping in mind, 
+But a high-pass screening is a good starting point.
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+```

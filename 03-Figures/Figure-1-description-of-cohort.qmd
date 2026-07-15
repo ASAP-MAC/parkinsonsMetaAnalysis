@@ -1,0 +1,101 @@
+---
+title: "Figure 1"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# ------ prepare outdir --------
+outdir <- file.path("results", "05-Constipation-score", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE)
+# ------------------------------
+
+library(biobakeryUtils)
+library(SummarizedExperiment)
+library(tidyverse)
+library(knitr)
+library(ggpubr)
+
+theme_set(theme_bw())
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+Input.tse
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+# Panel A - world heatmap
+
+```{r}
+library(maps)
+# get world map coordinates
+world_map <- map_data("world")
+# remove antarctica because we don't have samples and it complicates the scaling
+world_map <- filter(world_map, region != "Antarctica")
+
+# get pMD geographic data ready for plot
+pMD_samples_by_region <- Input_parkinson_usableDatasets.tse$Country %>%
+  gsub("Deep South ", "", ., fixed = TRUE) %>% 
+  table() %>% 
+  as.data.frame() %>% 
+  set_names(c("region", "n_samples"))
+
+# enrich world_map data.frame with n_samples
+world_map <- left_join(world_map, pMD_samples_by_region, by = "region") %>% 
+  # force 0 where no samples are available AND where Alaska is
+  mutate(n_samples = case_when(is.na(n_samples) | subregion == "Alaska" ~ 0, 
+                               TRUE ~ n_samples)
+         )
+
+# make the plot of the world
+world_n_samples_heatmap.gg <- ggplot(world_map, aes(x = long, y = lat, fill = n_samples > 0, group = group)) + 
+  geom_polygon(color = "gray70", linewidth = 0.2) + 
+  scale_fill_distiller(direction = 1) +
+  theme_void() + theme(legend.position = "none")
+
+world_n_samples_heatmap.gg
+```
+
+
+# Figure 1B - I don't know
+
+# Session info
+
+```{r session info}
+sessionInfo()
+```
+
