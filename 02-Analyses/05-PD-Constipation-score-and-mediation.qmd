@@ -1,0 +1,260 @@
+---
+title: "Healthy constipation signature and score"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "HUMAnN"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# ------ prepare outdir --------
+outdir <- file.path("results", "05-Constipation-score", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE)
+# ------------------------------
+
+library(biobakeryUtils)
+library(SummarizedExperiment)
+library(tidyverse)
+library(knitr)
+library(ggpubr)
+library(Maaslin2)
+library(furrr)
+
+# infer the tested unit from the biobakery tool
+tested_unit <- ifelse(params$biobakery_tool == "MetaPhlAn", "SGB", "pathway")
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+set.seed(1234)
+
+Input.tse
+```
+
+## Calculate and save two different constipation scores
+
+```{r prepare constipation score vectors}
+# load constipation DA results
+bluePoo_constipation_results <- read_tsv(file.path("results", "04-Constipation-healthy-metaAnalysis", sprintf("%s/02-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool, params$biobakery_tool))) %>% 
+  filter(study_name == "AsnicarF_2021")
+
+bluePoo_score <- bluePoo_constipation_results %>% 
+  split.data.frame(sign(.$t_stat)) %>% 
+  lapply(function(x) {
+    t_vec <- x$t_stat
+    names(t_vec) <- x[[tested_unit]]
+    return(t_vec)
+  }
+   ) %>% Reduce(c, .)
+
+bluePoo_score_only_signif <- bluePoo_constipation_results %>% 
+  filter(P.Value.adj < 0.1) %>% 
+  split.data.frame(sign(.$t_stat)) %>% 
+  lapply(function(x) {
+    t_vec <- x$t_stat
+    names(t_vec) <- x[[tested_unit]]
+    return(t_vec)
+  }
+   ) %>% Reduce(c, .)
+```
+
+```{r calculate constipation score}
+
+assay_table.mtx <- assay(Input.tse, "relative_abundance")
+
+# calculate constipation score 1 - sum of relative abundance of only significant features
+
+## create an intermediate score that comprises only singnificant associations from the discovery dataset
+score_intermediate <- bluePoo_score_only_signif[match(rownames(assay_table.mtx), names(bluePoo_score_only_signif))]
+names(score_intermediate) <- rownames(assay_table.mtx)
+## replace NAs introduced by match with 0 because that feature is not part of 
+## the score set of bacteria
+score_intermediate[is.na(score_intermediate)] <- 0
+
+constipation_score1 <- apply(assay_table.mtx, 2, function(x) sum(x * sign(score_intermediate)))
+#-----------------------------------------------------
+
+# calculate constipation score 2
+
+## create an intermediate score that comprises ALL features found in target dataset
+score_intermediate <- bluePoo_score[match(rownames(assay_table.mtx), names(bluePoo_score))]
+names(score_intermediate) <- rownames(assay_table.mtx)
+## replace NAs introduced by match with 0 because that feature is not part of 
+## the score set of bacteria
+score_intermediate[is.na(score_intermediate)] <- 0
+
+constipation_score2 <- apply(assay_table.mtx, 2, function(x) sum(x * score_intermediate))
+#-----------------------------------------------------
+
+# append scores to wallen metadata
+Input.tse$constipation_score1 <- constipation_score1
+Input.tse$constipation_score2 <- constipation_score2
+#-----------------------------------------------------
+```
+
+## Save scores as supplements
+
+```{r}
+constipation_scores <- Input.tse %>% 
+  colData() %>% 
+  as.data.frame() %>% 
+  dplyr::select(uuid, constipation_score1, constipation_score2)
+
+write_tsv(constipation_scores, sprintf("../05-Supplements/Supplementary Tables/constipation_score_%s.tsv", params$biobakery_tool))
+```
+
+## Mediation of Constipation on the PD effects on the Microbiome (on WallenZD_2021)
+
+Dataset: `WallenZ_2022`
+Outcome: SGBs (log-normal continuous)
+Exposure: PD (binary)
+Mediator: constipation score (binary)
+
+In the `mediation::mediate` function, non-parametric resampling would be more 
+accurate (`boot = TRUE`) than quasi-Bayesian Monte Carlo (`boot = FALSE`).
+
+The latter, with the setup as it is now, returns an error:
+
+```
+Error in if (xhat == 0) out <- 1 else { : 
+  missing value where TRUE/FALSE needed
+```
+
+likely a zero-variance error. Maybe be more restrictive with variance filtering 
+during the maaslin2 call. As proof of concept, I am leaving `boot = FALSE`. We
+can refine later
+
+Classical mediation framework: https://pmc.ncbi.nlm.nih.gov/articles/PMC6180946/
+example usage with continuous outcome but binary mediator and exposure:
+https://imai.fas.harvard.edu/projects/files/mediationReview.pdf
+
+Below the classical 3 models that are used to estimate mediation
+
+$Exposure~on~outcome: Microbiome \sim Parkinson$
+
+$Exposure~on~mediator: Constipation \sim Parkinson$
+
+$Exposure~and~mediator~on~outcome: Microbiome \sim Parkinson + Constipation$
+
+### Maaslin2 set of regressions
+
+```{r mediation regressions}
+
+WallenZD_2022.tse <- Input.tse[, Input.tse$study_name == "WallenZD_2022"]
+WallenZD_constip_2022.tse <- WallenZD_2022.tse[, !is.na(WallenZD_2022.tse$constipation_for_analysis)]
+WallenZD_constip_2022.tse <- WallenZD_constip_2022.tse[rowSums(assay(WallenZD_constip_2022.tse)) > 0,]
+
+t0_mediation <- Sys.time()
+
+set.seed(1234)
+outdir_mediation <- file.path(outdir, "mediation_Wallen")
+dir.create(outdir_mediation, recursive = TRUE)
+
+wallen_metadata.df <- as.data.frame(colData(WallenZD_constip_2022.tse))
+wallen_assay <- as.data.frame(t(assay(WallenZD_constip_2022.tse, "relative_abundance")))
+
+# Mediator Model (M)
+m_model <- glm(constipation_for_analysis ~ parkinson_for_analysis, binomial(link = "logit"), data = wallen_metadata.df)
+
+# Full model (F)
+output_captured <- capture.output(
+  Maaslin2(
+    input_data = wallen_assay,
+    input_metadata = wallen_metadata.df,
+    output = outdir_mediation,
+    save_models = TRUE,
+    plot_heatmap = FALSE,
+    plot_scatter = FALSE,
+    min_abundance = 0,
+    min_prevalence = 0.05,
+    min_variance = 0,
+    normalization = "none",
+    transform = "LOG",
+    analysis_method = "LM",
+    fixed_effects = c("parkinson_for_analysis", "constipation_for_analysis")
+  )
+)
+```
+
+### Mediation analysis
+
+```{r mediation}
+data_for_regressions <- read_tsv(file.path(outdir_mediation, "features", "filtered_data_norm_transformed.tsv")) %>% 
+  dplyr::rename(uuid = feature)
+
+fit_data <- dplyr::left_join(wallen_metadata.df, data_for_regressions, by = "uuid")
+
+features <- colnames(data_for_regressions[,-1])
+# --- Parallelization setup ---
+plan(multisession, workers = 8)
+
+mediations.list <- future_map(
+  features,
+  function(tx) {
+    
+    y_fit <- lm(
+      as.formula(sprintf("%s ~ parkinson_for_analysis + constipation_for_analysis", tx)),
+      data = fit_data
+    )
+    
+    set.seed(1234)
+    
+    mediation <- suppressWarnings(
+      mediation::mediate(
+        model.m  = m_model,
+        model.y  = y_fit,
+        treat    = "parkinson_for_analysis",
+        mediator = "constipation_for_analysis",
+        boot     = FALSE,
+        sims     = 1000
+      )
+    )
+    
+    return(mediation)
+  },
+  # crucial step, import only essential things into the R sessions
+  # this remains a little inefficient because all models are exported in each 
+  # session, taking 500 MB in each 
+  .options = furrr_options(
+    seed = TRUE,
+    globals = list(
+      fit_data = fit_data,
+      m_model = m_model
+    ),
+    packages = c("mediation")
+  )
+)
+
+names(mediations.list) <- features
+
+# stop parallel backend
+plan(sequential)
+
+t1_mediation <- Sys.time()
+rm(output_captured)
+```
+
+```{r}
+t1_mediation - t0_mediation
+```
+
+```{r}
+results_clean <- bind_rows(lapply(mediations.list, tidy_mediation), .id = tested_unit)
+# mutate(Effect = factor(Effect))
+# levels(results_clean$Effect) <- levels(results_clean$Effect)[c(4,2,1,3)]
+# write full results
+write_tsv(results_clean, file = file.path(outdir_mediation, "mediation_analysis_results_full.tsv"))
+```
+
+# Session info
+
+```{r session info}
+sessionInfo()
+```

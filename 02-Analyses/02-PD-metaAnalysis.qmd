@@ -10,6 +10,8 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
 ---
 
 Choices for `relative_abundance` data:
@@ -22,7 +24,7 @@ Choices for `relative_abundance` data:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- sprintf("results/%s", params$biobakery_tool)
+outdir <- file.path("results", "02-PD-meta-analysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -33,9 +35,41 @@ library(mia)
 library(openxlsx2)
 library(tidyverse)
 library(knitr)
-Input_parkinson_usableDatasets.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/02-dataset_PD-%s.tse/", params$biobakery_tool))
+library(VennDetail)
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+Input.tse
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
 
 Input_parkinson_usableDatasets.tse
+```
+
+```{r}
+kable(table(Input_parkinson_usableDatasets.tse$study_name, Input_parkinson_usableDatasets.tse$parkinson_for_analysis, useNA = "always"))
 ```
 
 ## Single dataset analysis with `limma-voom`
@@ -46,14 +80,14 @@ Important featueres of `voom`:
   - transforms pseudocount-added samples with counts per million and log to
   - formula is, for sample $x$: 
   
-  $\log_2{\frac{x_p}{\sum_i^n{x_i} + 1}\times10^6}$
+  $\log_2{\frac{x_p + 0.5}{\sum_i^n{x_i} + 1}\times10^6}$
   
 ```{r limma regression}
 per_dataset_DA_results_limma.tb <- Input_parkinson_usableDatasets.tse %>% 
   splitOn(group = "study_name") %>% 
   lapply(function(x.tse) {
     x.tse <- x.tse[rowSums(assay(x.tse)) > 0,]
-    return(limmaTSE(tse = x.tse, assay.type = "counts", voom.transform = TRUE, formula = ~ parkinson_for_analysis, coef = "parkinson_for_analysis1", p.adj_method = "BH"))
+    return(limmaTSE(tse = x.tse, assay.type = "counts", voom.transform = TRUE, formula = ~ parkinson_for_analysis, coef = "parkinson_for_analysisPD", p.adj_method = "BH"))
   }
   ) %>% bind_rows(.id = "study_name")
 ```
@@ -70,12 +104,12 @@ per_dataset_DA_results_maaslin2.tb <- Input_parkinson_usableDatasets.tse %>%
         tse = x.tse,
         assay.type = "relative_abundance",
         outdir = tempfile(pattern = "maaslin2_"),
+        outdir_delete = TRUE,
         min_variance = 0,
         transform = "LOG",
-        max_significance = 0.1,
+        max_significance = 0.2,
         fixed_effects = "parkinson_for_analysis",
         correction = "BH",
-        outdir_delete = TRUE,
         normalization = "NONE",
         min_prevalence = 0,
         min_abundance = 0,
@@ -85,71 +119,91 @@ per_dataset_DA_results_maaslin2.tb <- Input_parkinson_usableDatasets.tse %>%
         standardize = FALSE
       )
     )
-  }) %>% bind_rows(.id = "study_name")
+  }) %>% bind_rows(.id = "study_name") %>% 
+  filter(ExposureValue == "parkinson_for_analysisPD") %>% 
+  # readjust the p-value because we are interested only in one comparison
+  group_by(study_name) %>% 
+  mutate(P.Value.adj = p.adjust(P.Value, "BH")) %>% 
+  ungroup()
 ```
 
-## meta-analyze datasets (`REML`)
+## meta-analyze results (`REML`)
 
 ```{r, meta-analysis limma}
-MetaAnalysis_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha", minStudies.n = 6)
+MetaAnalysis_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
 ```
-
 
 ```{r, meta-analysis maaslin2}
-MetaAnalysis_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha", minStudies.n = 6)
+MetaAnalysis_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
 ```
 
-## Results table at a glance
+## Results table at a glance {.tabset}
 
 ```{r results table for both method meta-analyses}
-metaAnalysis_glance <- function(MetaAnalysis_results, signif_thr = 0.1, het_signif_thr = 0.1){
-  feats_tot <- nrow(MetaAnalysis_results$MetaAnalysis)
-
-heterog <- MetaAnalysis_results$MetaAnalysis %>% 
+metaAnalysis_glance <- function(MetaAnalysis_results, signif_thr = 0.2, het_signif_thr = 0.1){
+  
+  featureName <- colnames(MetaAnalysis_results$MetaAnalysis)[grep("StudiesTested", colnames(MetaAnalysis_results$MetaAnalysis)) - 1]
+  
+  tot_tested <- MetaAnalysis_results$MetaAnalysis[[featureName]]
+  
+  heterog <- MetaAnalysis_results$MetaAnalysis %>% 
   filter(Het.Pval < het_signif_thr) %>% 
-  nrow()
+  .[[featureName]]
 
 notSignif <- MetaAnalysis_results$MetaAnalysis %>% 
   filter(
-    Het.Pval >= het_signif_thr, 
     P.Value.adj >= signif_thr
     ) %>% 
-  nrow()
+  .[[featureName]]
 
 Positive_assoc <- MetaAnalysis_results$MetaAnalysis %>% 
   filter(
-    Het.Pval >= het_signif_thr, 
     P.Value.adj < signif_thr,
     Beta.pool > 0
     ) %>% 
-  nrow()
+  .[[featureName]]
 
 Negative_assoc <- MetaAnalysis_results$MetaAnalysis %>% 
   filter(
-    Het.Pval >= het_signif_thr, 
     P.Value.adj < signif_thr,
     Beta.pool < 0
     ) %>% 
-  nrow()
+  .[[featureName]]
   
-  out.df <- data.frame(
-    result_name = c("Tot Tested", "Heterogeneous", "Not Significant", "Positive association", "Negative association"),
-    result_condition = c("N rows", sprintf("Het.Pval >= %s", het_signif_thr),  sprintf("Het.Pval >= %s; P.adj >= %s", het_signif_thr, signif_thr), sprintf("Het.Pval >= %s; P.adj < %s; Beta > 0", het_signif_thr, signif_thr), sprintf("Het.Pval >= %s; P.adj < %s; Beta < 0", het_signif_thr, signif_thr)),
-    n_features = c(feats_tot, heterog, notSignif, Positive_assoc, Negative_assoc))
 
-  
-  return(out.df)
+return(
+  list(
+    # "Tot Tested" = tot_tested,
+    "Heterogeneous" = heterog,
+    "Not Significant" = notSignif,
+    "Positive" = Positive_assoc,
+    "Negative" = Negative_assoc
+  )
+)
 }
 
 meta_analyses_at_a_glance <- list(
   "limma" = MetaAnalysis_results_limma,
   "maaslin2" = MetaAnalysis_results_maaslin2
 ) %>% 
-  lapply(metaAnalysis_glance) %>% 
-  reduce(full_join, by = c("result_name", "result_condition"),suffix = c("_limma", "_maaslin2"))
-
-kable(meta_analyses_at_a_glance)
+  lapply(metaAnalysis_glance)
 ```
+
+### limma
+
+```{r upset plot of limma meta-analysis results}
+meta_analyses_at_a_glance$limma %>% 
+  upset_plot
+```
+
+### maaslin2
+
+```{r upset plot of maaslin2 meta-analysis results}
+meta_analyses_at_a_glance$maaslin2 %>% 
+  upset_plot
+```
+
+## {-}
 
 # Write results
 

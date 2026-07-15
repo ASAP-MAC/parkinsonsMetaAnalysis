@@ -1,0 +1,361 @@
+---
+title: "Parkinson Meta-Analysis with Random Forest"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+  assay_to_test: "relative_abundance"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+
+# create base directory output
+outdir <- file.path("results", "03-RF-LODO-PD-vs-Control", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+library(knitr)
+opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(magrittr)
+library(tidyverse)
+
+# Random forest packages
+library(ranger)
+library(pROC)
+library(SIAMCAT)
+
+# for table visualizations
+library(DT)
+
+# for loading tree summarized experiment
+library(biobakeryUtils)
+
+# for summary plots
+library(ggpubr) 
+theme_set(theme_bw())
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+# transform data with limma's method, which should be uniform for both MetaPhlAn and HUMAnN data
+if(params$assay_to_test == "voom"){
+assay(Input.tse, params$assay_to_test) <- apply(assay(Input.tse, "counts"), 2, function(x) log2(x + 0.5) - log2(sum(x + 1)) + log2(1e6))
+}
+
+Input.tse
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+```{r}
+kable(table(Input_parkinson_usableDatasets.tse$study_name, Input_parkinson_usableDatasets.tse$parkinson_for_analysis, useNA = "always"))
+```
+
+# Machine Learning (RF) of PD vs controls (leave one out) with `ranger`
+
+  0 - Data were pre-normalized with the same approach 
+  as the previous meta-analysis
+  
+  1 - Train microbiome on all vs one dataset
+  
+  2 - test on the left-out dataset
+  
+  3 - Repeat for all
+
+Important: `ranger` doesn't seem to have a cross-validation step in the training.
+SIAMCAT has it, and it is likely what is taking so long to complete.
+
+```{r rf classification with ranger}
+
+feat_matrix <- assay(Input_parkinson_usableDatasets.tse, params$assay_to_test)
+metadata    <- as.data.frame(colData(Input_parkinson_usableDatasets.tse))
+datasets    <- unique(metadata$study_name)
+
+t0_train_ranger <- Sys.time()
+
+trained_models_ranger.list <- sapply(datasets, function(ds) {
+    # prepare data for training
+    train_idx      <- metadata$study_name != ds
+    train_features <- t(feat_matrix[, train_idx])
+    train_labels   <- factor(metadata$parkinson_for_analysis[train_idx])
+    
+    # train rf model on all datasets except ds
+    rf_model <- ranger(
+      x           = train_features,
+      y           = train_labels,
+      num.trees   = 2000,
+      mtry        = 10,
+      probability = TRUE,
+      num.threads = 6,
+      seed        = 1234
+    )
+    
+    return(rf_model)
+    }, 
+    simplify = FALSE, USE.NAMES = TRUE
+    )
+
+t1_train_ranger <- Sys.time()
+
+# test each model on its dataset
+t0_test_ranger <- Sys.time()
+
+tested_models_ranger.list <- imap(trained_models_ranger.list, function(rf_model, ds){
+  # create test sets
+  test_idx      <- metadata$study_name == ds
+  test_features <- t(feat_matrix[, test_idx])
+  
+  # true binary labels: 1 = PD, 0 = Control (mirrors SIAMCAT conversion)
+  true_labels_binary <- as.integer(
+    metadata$parkinson_for_analysis[test_idx] == "PD"
+  )
+  
+  # get prediction probabilities
+  pred_probs <- predict(rf_model, data = test_features)$predictions[, "PD"]
+  
+  # DeLong 95% Confidence intervals of AUC/AUROC
+  roc_obj <- roc(response  = true_labels_binary,
+                 predictor = pred_probs,
+                 direction = "<",
+                 quiet     = TRUE)
+  ci_obj  <- ci.auc(roc_obj, method = "delong")
+  
+  # Wilcoxon p-value (same approach as SIAMCAT chunk)
+  pd_scores      <- pred_probs[true_labels_binary == 1]
+  control_scores <- pred_probs[true_labels_binary == 0]
+  wilcox_res     <- wilcox.test(pd_scores, control_scores, alternative = "greater")
+  
+  # return 1-row data frame that is easy to bind together
+  return(
+    data.frame(
+      AUROC = as.double(auc(roc_obj)),
+      AUROC_lowerCI  = as.double(ci_obj[1]),
+      AUROC_upperCI  = as.double(ci_obj[3]),
+      p_value_wilcox = wilcox_res$p.value))
+})
+t1_test_ranger <- Sys.time()
+
+rf_results_ranger.df <- bind_rows(tested_models_ranger.list, .id = "TestDataset")
+```
+
+```{r save ranger results}
+# save all training models as .rds
+saveRDS(trained_models_ranger.list, file = file.path(outdir, sprintf("rf_training-PD_ctrl-LODO_%s_%s.rds", "ranger", params$assay_to_test)))
+# save all polished results
+write_tsv(rf_results_ranger.df, file.path(outdir, sprintf("rf_results-PD_ctrl-LODO_%s_%s.tsv", "ranger", params$assay_to_test)))
+
+datatable(rf_results_ranger.df)
+```
+
+# Machine Learning (RF) of PD vs controls (leave one out) with `SIAMCAT`
+
+```{r rf classification with SIAMCAT}
+library(future)
+library(furrr)
+
+plan(multisession, workers = 10)
+
+# train with cross-validation 
+
+t0_train_siamcat <- Sys.time()
+
+trained_models_siamcat.list <- future_map(.x = datasets, .f = function(ds){
+  # get all datasets except ds
+  Input_subset.tse <- Input_parkinson_usableDatasets.tse[,
+    Input_parkinson_usableDatasets.tse$study_name != ds]
+  
+  # create a siamcat object
+  sc.obj.train <- siamcat(
+    feat  = assay(Input_subset.tse, params$assay_to_test),
+    meta  = as.data.frame(colData(Input_subset.tse)),
+    label = 'parkinson_for_analysis',
+    case  = "PD"
+  )
+  # normalization step is necessary, but it needs to be bypassed.
+  # any normalization shoudl be done in advance
+  sc.obj.train <- normalize.features(sc.obj.train, norm.method = 'pass',
+                                     feature.type = "original")
+  
+  # create training data splits for a less biased model training
+  sc.obj.train <- create.data.split(sc.obj.train,
+    num.folds   = 5,
+    num.resample = 5,
+    inseparable = NULL
+  )
+  
+  # train one random forest model that is an avergage of the splits above
+  sc.obj.train <- train.model(sc.obj.train,
+    method       = "randomForest",
+    feature.type = "normalized",
+    verbose      = 0,
+    param.set    = list(ntree = 2000, mtry = 10)
+  )
+  
+  return(sc.obj.train)
+}) %>% 
+  set_names(datasets)
+
+t1_train_siamcat <- Sys.time()
+
+# test left-out dataset
+t0_test_siamcat <- Sys.time()
+tested_models_siamcat.list <- future_imap(trained_models_siamcat.list, function(sc.obj.train, ds){
+
+  Input_subset2.tse <- Input_parkinson_usableDatasets.tse[,
+      Input_parkinson_usableDatasets.tse$study_name == ds]
+    
+    sc.obj.test <- siamcat(
+      feat  = assay(Input_subset2.tse, params$assay_to_test),
+      meta  = as.data.frame(colData(Input_subset2.tse)),
+      label = 'parkinson_for_analysis',
+      case  = "PD"
+    )
+    
+    sc.obj.test <- normalize.features(sc.obj.test, norm.method = 'pass',
+                                      feature.type = "original")
+    
+    sc.obj.test <- make.predictions(sc.obj.train, siamcat.holdout = sc.obj.test)
+    sc.obj.test <- evaluate.predictions(sc.obj.test)
+    
+    # Extract predictions and true labels for pROC
+    # pred_matrix rows = samples, cols = resamples; average across resamples
+    pred_probs <- rowMeans(pred_matrix(sc.obj.test))
+    
+    # True binary labels: SIAMCAT  +1/-1, convert to 1/0
+    true_labels_binary <- label(sc.obj.test)$label
+    true_labels_binary[true_labels_binary == -1] <- 0
+    
+    # Build ROC with pROC and get CI
+    roc_obj <- roc(response  = true_labels_binary,
+                   predictor = pred_probs,
+                   direction = "<",   # higher score = more likely case
+                   quiet     = TRUE)
+    
+    # DeLong 95% CI (fast, no bootstrapping needed for CI)
+    ci_obj  <- ci.auc(roc_obj, method = "delong")
+    
+    # p-value of PD-classification probabilities vs Control classification probabilities
+    # if probabilities are high for true cases and lower for false cases, significance is higher
+    # pROC's roc.test compares two ROC curves; compare against a null curve
+    pd_scores  <- pred_probs[true_labels_binary == 1]
+    control_scores  <- pred_probs[true_labels_binary == 0]
+    wilcox_res <- wilcox.test(pd_scores, control_scores, alternative = "greater")
+    
+    return(data.frame(
+        AUROC = as.double(auc(roc_obj)),
+        AUROC_lowerCI = as.double(ci_obj[1]),   # 2.5%
+        AUROC_upperCI = as.double(ci_obj[3]),   # 97.5%
+        p_value_wilcox = wilcox_res$p.value
+      ))}
+  )
+t1_test_siamcat <- Sys.time()
+
+# create a results tibble
+rf_results_siamcat.df <- bind_rows(tested_models_siamcat.list, .id = "TestDataset")
+```
+
+```{r}
+# save all training models as .rds
+saveRDS(tested_models_siamcat.list, file = file.path(outdir, sprintf("rf_training-PD_ctrl-LODO_%s_%s.rds", "SIAMCAT", params$assay_to_test)))
+# save all polished results
+write_tsv(rf_results_siamcat.df, file.path(outdir, sprintf("rf_results-PD_ctrl-LODO_%s_%s.tsv", "SIAMCAT", params$assay_to_test)))
+
+datatable(rf_results_siamcat.df)
+```
+
+# Write clean runtimes
+
+```{r}
+runtimes.df <- data.frame(
+  step = c("train", "test", "train", "test"),
+  method = c("ranger", "ranger", "siamcat", "siamcat"),
+  runtime_s = as.numeric(c(
+    difftime(t1_train_ranger, t0_train_ranger, units = "secs"), 
+    difftime(t1_test_ranger, t0_test_ranger, units = "secs"), 
+    difftime(t1_train_siamcat, t0_train_siamcat, units = "secs"), 
+    difftime(t1_test_siamcat, t0_test_siamcat, units = "secs"))
+  ))
+
+write_tsv(runtimes.df, file.path(outdir, sprintf("runtimes_of_both_methods_%s.tsv", params$assay_to_test)))
+```
+
+# The quick ranger implementation makes little difference in our case but is much faster
+
+```{r}
+runtimes.df <- runtimes.df %>% 
+  mutate(step = factor(step, levels = c("train", "test")))
+
+results_joined <- inner_join(rf_results_ranger.df, rf_results_siamcat.df, by = "TestDataset", suffix = c(".ranger", ".siamcat"))
+
+datatable(results_joined)
+```
+
+## SIAMCAT does not dramatically improve accuracy, and it takes orders of magnitude longer
+
+```{r, fig.height=6, fig.width=10}
+
+auroc_scatter <- ggplot(results_joined, aes(x  = AUROC.ranger, y = AUROC.siamcat)) + 
+  ggrepel::geom_text_repel(aes(label = TestDataset)) +
+  geom_errorbarh(aes(xmin = AUROC_lowerCI.ranger, xmax = AUROC_upperCI.ranger), color = "skyblue2") +
+  geom_errorbar(aes(ymin = AUROC_lowerCI.siamcat, ymax = AUROC_upperCI.siamcat), color = "gold3") +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color= "gray30", lty = "dashed") + 
+  labs(
+    caption = "errorbars are 95% CI of AUROC (DeLong method)"
+  )
+
+runtimes.col <- ggplot(runtimes.df, aes(x = step, y = runtime_s, fill = method)) + 
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("skyblue2", "gold3")) +
+  labs(
+    x = "Modeling step",
+    y = "Runtime (s)"
+  )
+
+plot_summary.gg <- ggarrange(auroc_scatter, runtimes.col, widths = c(1, 0.5), common.legend = TRUE)
+
+ggsave(plot = plot_summary.gg, filename = file.path(outdir, sprintf("ranger_vs_siamcat_%s.svg", params$assay_to_test)), height = 6, width = 10)
+
+plot_summary.gg
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
