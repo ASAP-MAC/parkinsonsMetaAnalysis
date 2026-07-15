@@ -209,7 +209,7 @@ dim(parkinsonsMetaAnalysisData_pruned.tse)
 parkinsonsMetaAnalysisData_pruned.tse@colData$age <- as.numeric(parkinsonsMetaAnalysisData_pruned.tse@colData$age)
 
 # Binary Parkinson variable (controls may carry other diseases)
-parkinsonsMetaAnalysisData_pruned.tse@colData$parkinson_for_analysis <- factor(ifelse(grepl("Parkinson", parkinsonsMetaAnalysisData_pruned.tse@colData$disease), 1, 0))
+parkinsonsMetaAnalysisData_pruned.tse@colData$parkinson_for_analysis <- factor(ifelse(grepl("Parkinson", parkinsonsMetaAnalysisData_pruned.tse@colData$disease), "PD", "Control"))
 
 # Recode missing age_group
 parkinsonsMetaAnalysisData_pruned.tse@colData$age_group <- factor(ifelse(
@@ -267,15 +267,6 @@ if(tool == "HUMAnN"){
   assayNames(parkinsonsMetaAnalysisData_pruned.tse)[1] <- "counts"
 }
 
-```
-
-## After colData curation, remove samples with less than 2 M reads per sample
-
-```{r remove samples with less than 2 M reads}
-parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData_pruned.tse[,parkinsonsMetaAnalysisData_pruned.tse@colData$reads_processed >= 2e6]
-parkinsonsMetaAnalysisData_pruned.tse <- parkinsonsMetaAnalysisData_pruned.tse[rowSums(assay(parkinsonsMetaAnalysisData_pruned.tse)) > 0,]
-
-sample_filtering_steps[["Min. 2M reads processed"]] <- parkinsonsMetaAnalysisData_pruned.tse@colData$uuid
 ```
 
 ## Write exclusions as json (list of uuids)

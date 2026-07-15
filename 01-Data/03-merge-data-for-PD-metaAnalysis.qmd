@@ -9,17 +9,10 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_tool: "MetaPhlAn"
   overwrite_TSE_out: "yes"
-  preval_thresh: 0.05
-  detect_thresh: 1e-5
 ---
 
 ```{r setup}
-if(!(params$biobakery_tool %in% c("MetaPhlAn", "HUMAnN"))){
-  stop("Biobakery tool requested not existent, choose between 'MetaPhlAn' and 'HUMAnN'")
-}
-
 library(knitr)
 library(mia)
 library(biobakeryUtils)
@@ -34,29 +27,17 @@ sample_filtering_steps <- list()
 output_data.path <- "~/parkinsonMetaAnalysis_data/"
 ```
 
-```{r dataset name mapping vectors}
-mapping_names.df <- data.frame(
-  data_type = c("relative_abundance", "pathabundance_unstratified"),
-  biobakery_tool = c("MetaPhlAn", "HUMAnN"),
-  output_name = c("relative_abundance", "pathways")  
-)
+# Load and merge MetaPhlAn relative_abundance data
 
-tool <- params$biobakery_tool
-output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_tool == tool]
-data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_tool == tool]
-```
-
-```{r load and merge datasets}
+```{r load and merge MetaPhlAn datasets}
 # load datasets
 PD_data.list <- list(
   pMD = read_TSE_from_dir(
-    sprintf(sprintf("%s/01-pMD_datasets/pMD_%s.tse", output_data.path, tool))
+    file.path(output_data.path, "01-pMD_datasets/", "pMD_MetaPhlAn.tse")
   ),
-  NGRC_UAB = read_TSE_from_dir(
-    sprintf("%s/02-private_local_datasets/Payami/NGRC_UAB_%s.tse/", output_data.path, tool)
-  ),
-  AsnicarF_2021.tse = read_TSE_from_dir(sprintf("%s/02-private_local_datasets/bluePoo/AsnicarF_2021_%s.tse", output_data.path, tool))
-) %>% 
+  AsnicarF_2021.tse = read_TSE_from_dir(
+    file.path(output_data.path, "02-private_local_datasets", "bluePoo", "AsnicarF_2021_MetaPhlAn.tse")
+    )) %>% 
   # workaround on age being character, not sure why this still happens
   lapply(function(x){
    x$age <- as.numeric(x$age)
@@ -83,37 +64,20 @@ tmp_relative_abundance.tse <- suppressMessages(reduce(
 ))
 
 # transfer relative_abundance into main merged tse
-all_data_merged.tse <- tmp_counts.tse
-assay(all_data_merged.tse, "relative_abundance") <- assay(tmp_relative_abundance.tse)
+MetaPhlAn_data_merged.tse <- tmp_counts.tse
+assay(MetaPhlAn_data_merged.tse, "relative_abundance") <- assay(tmp_relative_abundance.tse)
 
-# MetaPhlAn specific steps
-if(params$biobakery_tool == "MetaPhlAn"){
-  # Fix column name casing that mia changes on the SGB column in case of MetaPhlAn
-  colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8])
-  # replace taxonomy with GTDB taxonomy
-  all_data_merged.tse <- ChocoPhlAnTaxonomies::tse_replace_mpa_with_GTDB_taxonomy(all_data_merged.tse, 202403)
-}
+# Fix column name casing that mia changes on the SGB column in case of MetaPhlAn
+colnames(rowData(MetaPhlAn_data_merged.tse))[8] <- toupper(colnames(rowData(MetaPhlAn_data_merged.tse))[8])
+
+# replace taxonomy with GTDB taxonomy
+MetaPhlAn_data_merged.tse <- ChocoPhlAnTaxonomies::tse_replace_mpa_with_GTDB_taxonomy(MetaPhlAn_data_merged.tse, 202403)
 ```
 
-# Filter by prevalence
+## Filter MetaPhlAn data to have at least 2M reads per sample
 
-Before filter
-
-```{r print dataset before any filter is applied}
-all_data_merged.tse
-```
-
-After filter
-
-```{r print dataset after prevalence and abundance filters are applied}
-Input.tse <- subsetByPrevalent(
-  all_data_merged.tse,
-  assay.type = "relative_abundance",
-  prevalence = params$preval_thresh,
-  detection  = params$detect_thresh
-)
-
-Input.tse
+```{r}
+MetaPhlAn_data_merged.tse <- MetaPhlAn_data_merged.tse[, MetaPhlAn_data_merged.tse$reads_processed >= 2e6]
 ```
 
 ## Generate `constipation_for_analysis` variable
@@ -123,13 +87,6 @@ were not available before now.
 
 **AsnicarF_2021** is the gold standard, with a pre-set definition: `Normal`, 
 `Fast`, `Slow`.
-
-**Payami** private datasets have Constipation defined as yes/no answer to the 
-question "have you been constipated in the 3 months before stool collection?".
-Here, the values are converted as:
-  - Slow: Constipation == "Y"
-  - Normal: Constipation == "N"
-  - Fast: NA (not defined by the variable)
 
 **NishiwakiH_2024** also has a proxy for constipation, `stool_frequency`, 
 measured as number of bowel movements per week (BMPW). According to 
@@ -171,138 +128,139 @@ Many variables with different scales and meanings are harmonized together. To
 be cautious on the definition resulting from this grouping, the Asnicar/bluePoo
 definitions are applied.
 
-
 ```{r generate constipation variable}
 # fix empty slots of WallenZD constipation variable
-Input.tse$WallenZD_2022_uncurated_constipation[Input.tse$WallenZD_2022_uncurated_constipation == ""] <- NA 
+MetaPhlAn_data_merged.tse$WallenZD_2022_uncurated_constipation[MetaPhlAn_data_merged.tse$WallenZD_2022_uncurated_constipation == ""] <- NA 
+MetaPhlAn_data_merged.tse$Constipation <- MetaPhlAn_data_merged.tse$WallenZD_2022_uncurated_constipation
 
-# merge WallenZD uncurated constipation into the main Constipation variable
-# coming from the Payami datasets (Wallen, NGRC, UAB)
-Input.tse$Constipation <- case_when(is.na(Input.tse$Constipation) ~ Input.tse$WallenZD_2022_uncurated_constipation, TRUE ~ Input.tse$Constipation)
-
-# create one intermediate constipation_payami variable
-Input.tse$constipation_payami <- case_when(
-  Input.tse$Constipation == "Y" ~ "Slow", 
-  Input.tse$Constipation == "N" ~ "Normal", 
-  TRUE ~ NA
-  )
-
-Input.tse$constipation_for_analysis <- case_when(
-  is.na(Input.tse$Constipation) &
-    is.na(Input.tse$transit_time_cut_classes_definition) ~ NA,
-  Input.tse$Constipation == "Y" ~ "Slow",
-  Input.tse$transit_time_cut_classes_definition == "Slow" ~ "Slow",
-  Input.tse$Constipation == "N" ~ "Normal",
-  Input.tse$transit_time_cut_classes_definition == "Normal" ~ "Normal",
+MetaPhlAn_data_merged.tse$constipation_for_analysis <- case_when(
+  is.na(MetaPhlAn_data_merged.tse$Constipation) &
+    is.na(MetaPhlAn_data_merged.tse$transit_time_cut_classes_definition) ~ NA,
+  MetaPhlAn_data_merged.tse$Constipation == "Y" ~ "Slow",
+  MetaPhlAn_data_merged.tse$transit_time_cut_classes_definition == "Slow" ~ "Slow",
+  MetaPhlAn_data_merged.tse$Constipation == "N" ~ "Normal",
+  MetaPhlAn_data_merged.tse$transit_time_cut_classes_definition == "Normal" ~ "Normal",
   TRUE ~ "Fast"
 )
 
 # Create Boktor intermediate constipation into constipation_for_analysis
 ## 1 - group bristol scores
-Input.tse$boktor_constipation_bristol <- case_when(
-  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 <= 2 ~ "Slow",
-  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 2 ~ "Normal",
-  Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 5 ~ "Fast",
-  TRUE ~ Input.tse$BoktorJC_2023_uncurated_bristol_stool_scale2
+MetaPhlAn_data_merged.tse$constipation_boktor_bristol <- case_when(
+  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 <= 2 ~ "Slow",
+  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 2 ~ "Normal",
+  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 5 ~ "Fast",
+  TRUE ~ MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2
 )
 
-## 2 - make an OR statement with variable just created and 
-Input.tse$boktor_constipation_updrs <- case_when(
-  as.integer(Input.tse$BoktorJC_2023_uncurated_constipation_problems) <= 1 ~ "Normal",
-  as.integer(Input.tse$BoktorJC_2023_uncurated_constipation_problems) > 1 ~ "Slow",
+## 2 - make an OR statement with variable just created
+MetaPhlAn_data_merged.tse$constipation_boktor_updrs <- case_when(
+  as.integer(MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_constipation_problems) <= 1 ~ "Normal",
+  as.integer(MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_constipation_problems) > 1 ~ "Slow",
   TRUE ~ NA
 )
 
 # coalesce Boktor constipation variables together
-Input.tse$boktor_constipation <- coalesce(Input.tse$constipation_for_analysis, Input.tse$boktor_constipation_updrs)
+MetaPhlAn_data_merged.tse$constipation_boktor <- coalesce(MetaPhlAn_data_merged.tse$constipation_boktor_bristol, MetaPhlAn_data_merged.tse$constipation_boktor_updrs)
 
 # merge boktor into constipation_for_analysis
-Input.tse$constipation_for_analysis <- coalesce(Input.tse$boktor_constipation_bristol, Input.tse$boktor_constipation)
+MetaPhlAn_data_merged.tse$constipation_for_analysis <- coalesce(MetaPhlAn_data_merged.tse$constipation_for_analysis, MetaPhlAn_data_merged.tse$constipation_boktor)
 
 # merge Nishiwaki stool_frequency into the main constipation_for_analysis:
 ## 1 - Curate nishiwaki constipation from the stool frequency
-Input.tse$constipation_nishiwaki <-  case_when(
-  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) < 3 ~ "Slow",
-  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 3 ~ "Normal",
-  as.numeric(Input.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 21 ~ "Fast",
+MetaPhlAn_data_merged.tse$constipation_nishiwaki <-  case_when(
+  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) < 3 ~ "Slow",
+  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 3 ~ "Normal",
+  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 21 ~ "Fast",
   TRUE ~ NA)
 
 # make the variable a factor with Normal as baseline
-Input.tse$constipation_for_analysis <- coalesce(Input.tse$constipation_for_analysis, Input.tse$constipation_nishiwaki)
+MetaPhlAn_data_merged.tse$constipation_for_analysis <- coalesce(MetaPhlAn_data_merged.tse$constipation_for_analysis, MetaPhlAn_data_merged.tse$constipation_nishiwaki)
 
-Input.tse$constipation_for_analysis <- factor(Input.tse$constipation_for_analysis, levels = c("Normal", "Fast", "Slow"))
+MetaPhlAn_data_merged.tse$constipation_for_analysis <- factor(MetaPhlAn_data_merged.tse$constipation_for_analysis, levels = c("Normal", "Fast", "Slow"))
 
-kable(table(Input.tse$constipation_for_analysis, Input.tse$parkinson_for_analysis))
+kable(table(MetaPhlAn_data_merged.tse$constipation_for_analysis, MetaPhlAn_data_merged.tse$parkinson_for_analysis))
 ```
 
-## Write the complete dataset 
+# Load and merge Pathway data
 
-```{r write complete dataset}
-outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", tool)
+```{r load and merge HUMAnN datasets}
+# load datasets
+PD_data.list <- list(
+  pMD = read_TSE_from_dir(
+    file.path(output_data.path, "01-pMD_datasets/", "pMD_HUMAnN.tse")
+  ),
+  AsnicarF_2021.tse = read_TSE_from_dir(
+    file.path(output_data.path, "02-private_local_datasets", "bluePoo", "AsnicarF_2021_HUMAnN.tse")
+    )) %>% 
+  # workaround on age being character, not sure why this still happens
+  lapply(function(x){
+   x$age <- as.numeric(x$age)
+    return(x)
+  }
+    )
+
+# Merge all datasets counts
+tmp_counts.tse <- suppressMessages(reduce(
+  PD_data.list,
+  mergeSEs,
+  assay.type =  "counts",
+  missing.values = 0,
+  collapse.rows  = TRUE
+))
+
+# merge all dataset relative_abundances
+tmp_relative_abundance.tse <- suppressMessages(reduce(
+  PD_data.list,
+  mergeSEs,
+  assay.type =  "relative_abundance",
+  missing.values = 0,
+  collapse.rows  = TRUE
+))
+
+# transfer relative_abundance into main merged tse
+HUMAnN_data_merged.tse <- tmp_counts.tse
+assay(HUMAnN_data_merged.tse, "relative_abundance") <- assay(tmp_relative_abundance.tse)
+```
+
+## Replace metadata of Pathways with the newly generated metadata from MetaPhlAn
+
+```{r}
+metadata_to_replace <- colData(MetaPhlAn_data_merged.tse)[HUMAnN_data_merged.tse$uuid,]
+colData(HUMAnN_data_merged.tse) <- metadata_to_replace
+```
+
+## Keep only samples available in both datasets
+
+```{r}
+sample_intersect <- intersect(MetaPhlAn_data_merged.tse$uuid, HUMAnN_data_merged.tse$uuid)
+MetaPhlAn_data_merged.tse <- MetaPhlAn_data_merged.tse[, MetaPhlAn_data_merged.tse$uuid %in% sample_intersect]
+HUMAnN_data_merged.tse <- HUMAnN_data_merged.tse[, HUMAnN_data_merged.tse$uuid %in% sample_intersect]
+```
+
+# Write the complete datasets
+
+## MetaPhlAn
+
+```{r write complete MetaPhlAn dataset}
+outputName <- file.path("~", "parkinsonMetaAnalysis_data", "03-analysis_ready_datasets", "01-dataset_complete-MetaPhlAn.tse")
 
 if(params$overwrite_TSE_out == "yes"){
   unlink(outputName, recursive = TRUE)
 }
 
-write_TSE_to_dir(Input.tse, out.dir = outputName)
+write_TSE_to_dir(MetaPhlAn_data_merged.tse, out.dir = outputName)
 ```
 
-## Write a dataset to be used for the `Parkinson` meta-analysis
+## HUMAnN 
 
-```{r filter dataset for parkinson meta-analysis}
-# Parkinson as target condition
-Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
-Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
-
-# Each dataset should have at least 30 samples in cases and 30 in controls
-ok_datasets <- Input_parkinson.tse@colData %>% 
-  as.data.frame() %>% 
-  group_by(study_name) %>% 
-  filter(
-    sum(parkinson_for_analysis == 0) > 10,
-    sum(parkinson_for_analysis == 1) > 10
-  )
-
-## filter TSE to restrict to 'ok' datasets 
-Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
-
-## filter all-0 rows again
-Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse)) > 0,]
-```
-
-
-```{r write dataset for parkinson meta-analysis}
-# save tse
-outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/02-dataset_PD-%s.tse", tool)
-
-if(params$overwrite_TSE_out == "yes"){
-  unlink(outputName, recursive = TRUE)
-}
-write_TSE_to_dir(Input_parkinson_usableDatasets.tse, out.dir = outputName)
-
-Input_parkinson_usableDatasets.tse
-```
-
-## Write a dataset to be used for the `Healthy Constipated` meta-analysis
-
-```{r filter dataset for constipation meta-analysis}
-# filter for disease == Healthy. From 3384 to 1709
-Input_constipation_healthy.tse <- Input.tse[, Input.tse$disease == "Healthy"]
-
-# filter for available constipation information. From 1709 to 1242
-Input_constipation_healthy.tse <- Input_constipation_healthy.tse[,!is.na(Input_constipation_healthy.tse$constipation_for_analysis)]
-
-kable(table(Input_constipation_healthy.tse$study_name, Input_constipation_healthy.tse$constipation_for_analysis, useNA = "always"))
-```
-
-```{r write dataset for constipation meta-analysis}
-outputName <- sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/03-dataset_constipation-%s.tse", tool)
+```{r write complete HUMAnN dataset}
+outputName <- file.path("~", "parkinsonMetaAnalysis_data", "03-analysis_ready_datasets", "01-dataset_complete-HUMAnN.tse")
 
 if(params$overwrite_TSE_out == "yes"){
   unlink(outputName, recursive = TRUE)
 }
 
-write_TSE_to_dir(Input_constipation_healthy.tse, outputName)
+write_TSE_to_dir(HUMAnN_data_merged.tse, out.dir = outputName)
 ```
 
 # Session Info

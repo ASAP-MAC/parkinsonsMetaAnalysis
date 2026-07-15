@@ -3,33 +3,13 @@
 ## Download public data from `parkinsonsMetagenomicData`
 
 ```bash
-for tool in MetaPhlAn HUMAnN;
-do
-  cp "01-prepare-pMD-data.qmd" \
-     "01-prepare-pMD-data_${tool}.qmd"
-
-  quarto render "01-prepare-pMD-data_${tool}.qmd" \
-    -P "biobakery_tool:${tool}" \
-    -P "overwrite_TSE_out:yes"
-
-  rm "01-prepare-pMD-data_${tool}.qmd"
-done
+../utils/render_qmd.sh "01-prepare-pMD-data.qmd"
 ```
 
 ## Prepare unpublished data locally (blue Poo, Payami NGRC, Payami UAB)
 
 ```bash
-for tool in MetaPhlAn HUMAnN;
-do
-  cp "02-prepare-private-data.qmd" \
-     "02-prepare-private-data_${tool}.qmd"
-
-  quarto render "02-prepare-private-data_${tool}.qmd" \
-    -P "biobakery_tool:${tool}" \
-    -P "overwrite_TSE_out:yes"
-
-  rm "02-prepare-private-data_${tool}.qmd"
-done
+../utils/render_qmd.sh "02-prepare-bluePoo-data.qmd"
 ```
 
 ## Files are stores in local home to ensure data privacy
@@ -70,15 +50,5 @@ find . -type f -name "*sample_filtering_steps.json"
 This last step is useful for one last round of exclusions
 
 ```bash
-for tool in MetaPhlAn HUMAnN;
-do
-  cp "03-merge-data-for-PD-metaAnalysis.qmd" \
-     "03-merge-data-for-PD-metaAnalysis_${tool}.qmd"
-
-  quarto render "03-merge-data-for-PD-metaAnalysis_${tool}.qmd" \
-    -P "biobakery_tool:${tool}" \
-    -P "overwrite_TSE_out:yes"
-
-  rm "03-merge-data-for-PD-metaAnalysis_${tool}.qmd"
-done
+../utils/render_qmd.sh "03-merge-data-for-PD-metaAnalysis.qmd"
 ```
