@@ -1,0 +1,88 @@
+---
+title: "Study tables, MetaPhlAn alpha and beta diversities"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+  BugSigDB_version: 1.3.1
+---
+
+```{r setup}
+library(kableExtra)
+library(magrittr)
+library(tidyverse)
+library(bugsigdbr)
+library(bugSigSimple) # BiocManager::install("waldronlab/bugSigSimple", dependencies = TRUE)
+
+outdir <- file.path("results", "00-BugSigDB")
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+bsdb_zenodo_entry <- "https://doi.org/10.5281/zenodo.19740674"
+ 
+bsdb_versions <- suppressMessages(zen4R::get_versions(bsdb_zenodo_entry))
+bsdb_versioned_doi <- bsdb_versions$doi[bsdb_versions$version == paste0("v", params$BugSigDB_version)]
+
+bugsigdb.df <- importBugSigDB(version = bsdb_versioned_doi, cache = FALSE)
+```
+
+```{r, echo=TRUE}
+# define query
+condition_of_interest <- "Parkinson's disease"
+body_site <- "Feces"
+efo_id <- "MONDO:0005180" 
+host <- "Homo sapiens"
+
+cbind(c("Condition", "EFO ID", "Host species", "Body site"), c(condition_of_interest, efo_id, host, body_site)) %>% 
+  set_colnames(c("Parameter", "Value")) %>% 
+  kbl() %>% 
+  kable_styling()
+```
+
+```{r}
+bugsigdb_human_feces.df <- bugsigdb.df %>% 
+  filter(`Body site` == body_site, `Host species` == host)
+```
+
+## Most studied conditions in bugsigdb
+
+```{r}
+studies_by_condition_in_gut <- bugsigdb_human_feces.df %>%
+  group_by(Condition) %>%
+  reframe(
+    nStudies = length(unique(Study)),
+    nSignatures = n(),
+    `Signature Mean length (SD)` = sprintf("%.1f (%.1f)", mean(lengths(
+      `MetaPhlAn taxon names`
+    )), sd(lengths(
+      `MetaPhlAn taxon names`
+    )))
+  ) %>%
+  arrange(desc(nStudies))
+
+```
+
+```{r}
+write_tsv(studies_by_condition_in_gut, file = file.path(outdir, "01-studies_and_signatures_per_condition.tsv"))
+DT::datatable(studies_by_condition_in_gut)
+```
+
+## PD taxa table
+
+```{r}
+PD_taxa_table <- createTaxonTable(bugsigdb_human_feces.df %>% filter(Condition == condition_of_interest), n = 20)
+write_tsv(PD_taxa_table, file = file.path(outdir, "02-taxa_table_in_PD.tsv"))
+
+DT::datatable(PD_taxa_table)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
