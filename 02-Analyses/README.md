@@ -46,3 +46,13 @@ Although underpowered, a meta-analysis is still worth doing
 ```bash
 ../utils/render_qmd.sh "05-Constipation-score.qmd"
 ```
+
+# Declutter the directory
+
+```bash
+rm *.html
+rm slurm*
+rm *.rmarkdown
+find . -maxdepth 1 -type d -name "*_files" -exec rm -r {} +
+find . -maxdepth 1 -type d -name "*_cache" -exec rm -r {} +
+```
