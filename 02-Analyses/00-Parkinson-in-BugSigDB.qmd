@@ -57,6 +57,7 @@ studies_by_condition_in_gut <- bugsigdb_human_feces.df %>%
   reframe(
     nStudies = length(unique(Study)),
     nSignatures = n(),
+    `Signature/Study ratio` = round(nSignatures/nStudies, 2),
     `Signature Mean length (SD)` = sprintf("%.1f (%.1f)", mean(lengths(
       `MetaPhlAn taxon names`
     )), sd(lengths(
@@ -64,7 +65,6 @@ studies_by_condition_in_gut <- bugsigdb_human_feces.df %>%
     )))
   ) %>%
   arrange(desc(nStudies))
-
 ```
 
 ```{r}
