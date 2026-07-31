@@ -1,0 +1,211 @@
+---
+title: "Parkinson Meta-Analysis with Random Forest LODO and sample size saturation"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+  assay_to_test: "relative_abundance"
+  preval_thresh: 0.05
+  detect_thresh: 1e-5
+---
+
+The reasoning for this analysis is trying to see if predictions by Random Forest
+can improve if more samples were collected.
+
+To do so, in each LODO iteration we will try to predict the PD-Control set using
+any combination possible of the remaining datasets, including single, pairs, groups of 3, ...
+
+We will record the number of samples in each training set and the AUC obtained 
+with that test set.
+
+```{r setup, message=FALSE, warning=FALSE}
+
+# create base directory output
+outdir <- file.path("results", "03-RF-LODO-PD-vs-Control", params$biobakery_tool, "sample-size-gradient")
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+library(knitr)
+opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(magrittr)
+library(tidyverse)
+library(furrr)
+# Random forest packages
+library(ranger)
+library(pROC)
+
+# for table visualizations
+library(DT)
+
+# for loading tree summarized experiment
+library(biobakeryUtils)
+
+# for summary plots
+library(ggpubr) 
+theme_set(theme_pubr())
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+```{r}
+kable(table(Input_parkinson_usableDatasets.tse$study_name, Input_parkinson_usableDatasets.tse$parkinson_for_analysis, useNA = "always"))
+```
+
+# Machine Learning (RF) of PD vs controls (leave one out) with `ranger`
+
+  0 - Data were pre-normalized with the same approach 
+  as the previous meta-analysis
+  
+  1 - Train microbiome on all vs one dataset
+  
+  2 - test on the left-out dataset
+  
+  3 - Repeat for all
+
+Important: `ranger` doesn't seem to have a cross-validation step in the training.
+SIAMCAT has it, and it is likely what is taking so long to complete.
+
+```{r rf classification with ranger}
+plan(multisession, workers = 10)
+
+feat_matrix <- assay(Input_parkinson_usableDatasets.tse, params$assay_to_test)
+metadata    <- as.data.frame(colData(Input_parkinson_usableDatasets.tse))
+datasets    <- unique(metadata$study_name)
+
+t0_ranger <- Sys.time()
+
+trained_models_ranger.list <- sapply(datasets, function(ds) {
+    
+    #training datasets
+    training_datasets <- setdiff(datasets, ds)
+    
+    training_datasets_seq_combn <- lapply(seq_along(training_datasets), function(i) combn(training_datasets, i, simplify = FALSE)) %>% 
+      unlist(recursive = FALSE)
+    
+    rf_results <- future_map(training_datasets_seq_combn, function(dss) {
+      # prepare data for training
+    train_idx      <- metadata$study_name %in% dss
+    train_features <- t(feat_matrix[, train_idx])
+    train_labels   <- factor(metadata$parkinson_for_analysis[train_idx])  
+    
+    # train rf model on all datasets except the dataset(s)
+    rf_model <- ranger(
+      x           = train_features,
+      y           = train_labels,
+      num.trees   = 2000,
+      mtry        = 10,
+      probability = TRUE,
+      num.threads = 6,
+      seed        = 1234
+    )
+    
+    # create test sets
+    test_idx      <- metadata$study_name == ds
+    test_features <- t(feat_matrix[, test_idx])
+  
+    # true binary labels: 1 = PD, 0 = Control (mirrors SIAMCAT conversion)
+    true_labels_binary <- as.integer(
+      metadata$parkinson_for_analysis[test_idx] == "PD"
+    )
+  
+    # get prediction probabilities
+    pred_probs <- predict(rf_model, data = test_features)$predictions[, "PD"]
+    
+    # DeLong 95% Confidence intervals of AUC/AUROC
+    roc_obj <- roc(response  = true_labels_binary,
+                 predictor = pred_probs,
+                 direction = "<",
+                 quiet     = TRUE)
+    
+    ci_obj  <- ci.auc(roc_obj, method = "delong")
+    
+    return(tibble(
+      trainingDatasets = paste(dss, collapse = ";"), 
+      nTrainingDatasets = length(dss), 
+      nTrainingSamples = sum(train_idx), 
+      AUROC = as.double(auc(roc_obj)), 
+      AUROC_lowerCI = as.double(ci_obj[1]), 
+      AUROC_upperCI = as.double(ci_obj[3]))
+      )
+    }) %>% bind_rows()
+    }, 
+    simplify = FALSE, USE.NAMES = TRUE
+    )
+
+trained_models_ranger.df <- trained_models_ranger.list %>% 
+  bind_rows(.id = "testDataset")
+
+t1_ranger <- Sys.time()
+
+t1_ranger - t0_ranger
+```
+
+```{r save ranger results}
+# save all polished results
+write_tsv(trained_models_ranger.df, file.path(outdir, sprintf("sample_size_gradient_res_%s_%s.tsv", "ranger", params$assay_to_test)))
+```
+
+```{r create plot results, warning=FALSE, message=FALSE}
+sample_gradient.gg <- trained_models_ranger.df %>% 
+  ggplot(aes(x = nTrainingSamples, y = AUROC, color = factor(nTrainingDatasets), key = trainingDatasets)) + 
+  geom_point() + 
+  facet_wrap(~testDataset) + 
+  scale_color_viridis_d(direction = -1)
+
+sample_gradient.gg
+```
+
+```{r}
+plotly::ggplotly(sample_gradient.gg)
+```
+
+
+```{r save plot results}
+# svg
+ggsave(plot = sample_gradient.gg, filename = file.path(outdir, sprintf("sample_size_gradient_%s_%s.svg", "ranger", params$assay_to_test)), width = 9, height = 9)
+
+# png
+ggsave(plot = sample_gradient.gg, filename = file.path(outdir, sprintf("sample_size_gradient_%s_%s.png", "ranger", params$assay_to_test)), width = 9, height = 9)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
