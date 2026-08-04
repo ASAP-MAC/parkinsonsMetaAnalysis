@@ -1,0 +1,70 @@
+---
+title: "Figure 3 - Random Forest PD prediction"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+output:
+  html:
+    embed-resources: true
+    toc: true
+    toc-location: left
+    hide-code: false
+    highlight: haddock
+params:
+  biobakery_tool: "MetaPhlAn"
+---
+
+```{r setup}
+library(tidyverse)
+res_base_dir <- file.path("..", "02-Analyses", "results", "03-RF-LODO-PD-vs-Control", params$biobakery_tool)
+theme_set(theme_bw())
+```
+
+## Auroc vs 
+
+# AUROC vs gradient
+
+```{r load rf gradient results}
+rf_predictions_gradients <- read_tsv(file.path(res_base_dir, "sample-size-gradient", "sample_size_gradient_res_ranger_relative_abundance.tsv")) %>% 
+  mutate(wallen_in_training = grepl("Wallen", trainingDatasets))
+```
+
+```{r}
+sample_gradient.gg <- ggplot() + 
+  geom_point(data = rf_predictions_gradients, mapping = aes(x = nTrainingSamples, y = AUROC, color = factor(nTrainingDatasets))) + 
+  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
+  geom_point(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
+  geom_label(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
+  facet_wrap(~testDataset) + 
+  scale_color_viridis_d(direction = -1) + 
+  theme(legend.position = "top") +
+  labs(
+    x = "Number of samples in the training set", 
+    color = "Number of training datasets"
+  )
+
+sample_gradient.gg
+```
+
+```{r}
+sample_gradient_color_Wallen_in_training.gg <- ggplot() +
+  geom_point(data = rf_predictions_gradients, mapping = aes(x = nTrainingSamples, y = AUROC, color = wallen_in_training)) + 
+  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
+  geom_point(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
+  geom_label(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples - 100, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
+  facet_wrap(~testDataset) + 
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = "gray80")) +
+  theme(legend.position = "top", axis.text.x = element_text(hjust = 1, angle = 60)) +
+  
+  labs(
+    x = "Number of samples in the training set", 
+    color = "WallenZD_2022 in Training Set"
+  )
+
+ggsave(plot = sample_gradient_color_Wallen_in_training.gg, filename = file.path("results", "03-rf-with-sample-gradients.svg"), height = 8, width = 8)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
