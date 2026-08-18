@@ -18,10 +18,10 @@ If private data were available under `~/parkinsonMetaAnalysis_data/02-private_lo
 these below would be the datasets that were just created:
 
 ```bash
-cd ~/parkinsonMetaAnalysis_data
+find ~/parkinsonMetaAnalysis_data -type d -name "*.tse"
+```
 
-find . -type d -name "*.tse"
-
+```
 ./02-private_local_datasets/bluePoo/AsnicarF_2021_MetaPhlAn.tse
 ./02-private_local_datasets/bluePoo/AsnicarF_2021_HUMAnN.tse
 ./02-private_local_datasets/Payami/NGRC_UAB_MetaPhlAn.tse

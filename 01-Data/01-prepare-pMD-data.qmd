@@ -218,12 +218,18 @@ parkinsonsMetaAnalysisData_pruned.tse@colData$age_group <- factor(ifelse(
   parkinsonsMetaAnalysisData_pruned.tse@colData$age_group
 ))
 
-# Number of diseases (including PD)
+# number of diseases
 parkinsonsMetaAnalysisData_pruned.tse@colData$number_diseases <- ifelse(
   parkinsonsMetaAnalysisData_pruned.tse@colData$disease == "Healthy",
   0,
   str_count(parkinsonsMetaAnalysisData_pruned.tse@colData$disease, ";") + 1
 )
+
+# comorbidities to PD
+parkinsonsMetaAnalysisData_pruned.tse@colData$comorbidities <- ifelse(
+  grepl("Parkinson", parkinsonsMetaAnalysisData_pruned.tse@colData$disease), 
+  parkinsonsMetaAnalysisData_pruned.tse@colData$number_diseases - 1,
+  parkinsonsMetaAnalysisData_pruned.tse@colData$number_diseases)
 
 # Country conversion per study
 country_per_study.chr <- c(
