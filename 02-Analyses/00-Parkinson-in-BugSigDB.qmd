@@ -33,20 +33,23 @@ bugsigdb.df <- importBugSigDB(version = bsdb_versioned_doi, cache = FALSE)
 
 ```{r, echo=TRUE}
 # define query
-condition_of_interest <- "Parkinson's disease"
-body_site <- "Feces"
-efo_id <- "MONDO:0005180" 
-host <- "Homo sapiens"
+query.list <- list(
+  Condition = "Parkinson's disease", 
+  "Body site" = "Feces",
+  "EFO ID" = "MONDO:0005180",
+  "Host species" = "Homo sapiens",
+  "Study design" = "case-control"
+  )
 
-cbind(c("Condition", "EFO ID", "Host species", "Body site"), c(condition_of_interest, efo_id, host, body_site)) %>% 
-  set_colnames(c("Parameter", "Value")) %>% 
+unlist(query.list) %>% 
+  as.data.frame() %>% 
   kbl() %>% 
   kable_styling()
 ```
 
 ```{r}
 bugsigdb_human_feces.df <- bugsigdb.df %>% 
-  filter(`Body site` == body_site, `Host species` == host)
+  filter(`Body site` == query.list$`Body site`, `Host species` == query.list$`Host species`, `Study design` == query.list$`Study design`)
 ```
 
 ## Most studied conditions in bugsigdb
@@ -75,9 +78,40 @@ DT::datatable(studies_by_condition_in_gut)
 ## PD taxa table
 
 ```{r}
-PD_taxa_table <- createTaxonTable(bugsigdb_human_feces.df %>% filter(Condition == condition_of_interest), n = 20)
+bugsigdb_human_feces_PD.df <- filter(bugsigdb_human_feces.df, Condition == query.list$Condition) 
+```
+
+```{r}
+tmp_UP <- bugsigdb_human_feces_PD.df %>% 
+  getSignatures(tax.id.type = "metaphlan", tax.level = "genus") %>% 
+  .[grepl("_UP", names(.))]
+
+tmp_DOWN <- bugsigdb_human_feces_PD.df %>% 
+  getSignatures(tax.id.type = "metaphlan", tax.level = "genus") %>% 
+  .[grepl("_DOWN", names(.))]
+
+signatures_down_genus <- lapply(tmp_DOWN, as.data.frame) %>% 
+  bind_rows(.id = "signature_id") %>% 
+  set_names(c("signature_id", "taxonomy")) %>% group_by(taxonomy) %>% 
+  reframe(n_signatures_present = n()) %>% 
+  separate_wider_delim(cols = taxonomy, delim = "|", names = c("kingdom", "phylum", "class", "order", "family", "genus"), too_few = "align_start")
+
+signatures_up_genus <- lapply(tmp_UP, as.data.frame) %>% 
+  bind_rows(.id = "signature_id") %>% 
+  set_names(c("signature_id", "taxonomy")) %>% group_by(taxonomy) %>% 
+  reframe(n_signatures_present = n()) %>% 
+  separate_wider_delim(cols = taxonomy, delim = "|", names = c("kingdom", "phylum", "class", "order", "family", "genus"), too_few = "align_start", too_many = "debug")
+```
+
+
+```{r}
+PD_taxa_table <- createTaxonTable(bugsigdb_human_feces_PD.df, n = 100) %>% 
+  set_names(c("Taxon Name",	"Taxonomic Level", "N. signatures",	"Increased",	"Decreased",	"Binomial Test P-value"))
+
+# write full table
 write_tsv(PD_taxa_table, file = file.path(outdir, "02-taxa_table_in_PD.tsv"))
 
+# write series of tables split by 
 DT::datatable(PD_taxa_table)
 ```
 
