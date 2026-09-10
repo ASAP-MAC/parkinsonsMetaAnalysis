@@ -12,6 +12,7 @@ editor: source
 
 ```{r setup, warning=FALSE, message=FALSE}
 library(tidyverse)
+library(biobakeryUtils)
 suppTabIndex <- 1
 outdir <- "Supplementary Tables"
 dir.create(outdir)
@@ -26,6 +27,24 @@ suppTabIndex <- suppTabIndex + 1
           
 ```
 
+## Supplementary Table `r suppTabIndex` - studies included in the analyses
+
+```{r}
+# use this for a richer source of info
+# https://raw.githubusercontent.com/ASAP-MAC/parkinsons_data_search/refs/heads/main/parkinson_shotgun_datasets.tsv
+
+input.tse <- read_TSE_from_dir("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-MetaPhlAn.tse/")
+  
+# extract colData
+input.df <- as.data.frame(colData(input.tse))
+
+datasets_accessions <- input.df %>% select(study_name, BioProject) %>% distinct()
+
+# fix Asnicar's missing dataset accession
+invisible(file.copy("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv", sprintf("%s/Table S%s - step by step feature and sample exclusions.tsv", outdir, suppTabIndex)))
+
+suppTabIndex <- suppTabIndex + 1
+```
 
 # Session Info
 

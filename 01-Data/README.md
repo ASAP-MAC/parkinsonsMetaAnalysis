@@ -50,5 +50,5 @@ find . -type f -name "*sample_filtering_steps.json"
 This last step is useful for one last round of exclusions
 
 ```bash
-../utils/render_qmd.sh "03-merge-data-for-PD-metaAnalysis.qmd"
+quarto render "03-merge-data-for-PD-metaAnalysis.qmd"
 ```

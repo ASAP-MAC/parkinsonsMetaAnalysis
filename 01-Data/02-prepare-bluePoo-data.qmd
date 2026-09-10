@@ -33,23 +33,20 @@ library(ChocoPhlAnTaxonomies) # remotes::install_github("g-antonello/ChocoPhlAnT
 
 
 opts_chunk$set(
-  message = FALSE, 
+  message = FALSE,
   warning = FALSE
 )
+
+source("../utils/pMD_data_prep_helpers.R")
+
 sample_filtering_steps <- list()
 output_data.path <- "~/parkinsonMetaAnalysis_data/02-private_local_datasets/"
 ```
 
 ```{r dataset name mapping vectors}
-mapping_names.df <- data.frame(
-  data_type = c("relative_abundance", "pathabundance_unstratified"),
-  biobakery_tool = c("MetaPhlAn", "HUMAnN"),
-  output_name = c("relative_abundance", "pathways")  
-)
-
 tool <- params$biobakery_tool
-output_name <- mapping_names.df$output_name[mapping_names.df$biobakery_tool == tool]
-data_type <- mapping_names.df$data_type[mapping_names.df$biobakery_tool == tool]
+output_name <- biobakery_tool_map$output_name[biobakery_tool_map$biobakery_tool == tool]
+data_type <- biobakery_tool_map$data_type[biobakery_tool_map$biobakery_tool == tool]
 ```
 
 # Blue Poo dataset
@@ -61,7 +58,7 @@ leave the Unitn server.
 ## load pMD dataset `AsnicarF_2021`
 
 ```{r download AsnicarF_2021 from parkinsonsMetagenomicData}
-data("sampleMetadata", "parkinsonsMetagenomicData")
+data("sampleMetadata", package = "parkinsonsMetagenomicData")
 
 AsnicarF_2021.tse <- sampleMetadata[sampleMetadata$study_name == "AsnicarF_2021",] %>% 
   returnSamples(data_type = data_type)
@@ -120,7 +117,10 @@ if(!identical(rownames(new_coldata), rownames(colData(AsnicarF_2021.tse)))){
 
 colData(AsnicarF_2021.tse) <- DataFrame(new_coldata)
 
+# fix target condition in metadata for merging later
 AsnicarF_2021.tse@colData$target_condition <- "None"
+# Manually add SRA and BioProject 
+AsnicarF_2021.tse@colData$BioProject <- "PRJEB39223"
 
 # record samples lost in metadata replacement
 sample_filtering_steps[["Private metadata available"]] <- AsnicarF_2021.tse@colData$uuid
@@ -150,47 +150,13 @@ AsnicarF_2021.tse@colData$number_diseases <- ifelse(
 )
 
 # Country conversion per study
-country_per_study.chr <- c(
-  BedarfJR_2017   = "Germany",
-  BoktorJC_2023   = "USA",
-  BoktorJC_2023.2 = "USA",
-  DuruIC_2024     = "Finland",
-  JoS_2022        = "South Korea",
-  LeeEJ_2024      = "South Korea",
-  MaoL_2021       = "China",
-  NishiwakiH_2024 = "Japan",
-  QianY_2020      = "China",
-  WallenZD_2022   = "Deep South USA",
-  ZhangM_2023     = "China",
-  NGRC            = "USA",
-  UAB             = "Deep South USA"
-)
-
 AsnicarF_2021.tse@colData$Country <- country_per_study.chr[AsnicarF_2021.tse@colData$study_name]
 ```
 
 ## biobakery tool-specific curation
 
 ```{r AsnicarF improve TSE formatting specific to biobakery tool}
-AsnicarF_2021.tse <- pMD_enhance(AsnicarF_2021.tse, data_type = data_type)
-
-if(tool == "MetaPhlAn"){
-  # reads_processed as numeric values  
-  AsnicarF_2021.tse@colData$reads_processed <- as.numeric(gsub("#([0-9]+).*", 
-    "\\1", AsnicarF_2021.tse@colData$reads_processed))
-  
-  # reorder and rename assays to counts; relative_abundance; pathways
-  assays(AsnicarF_2021.tse) <- assays(AsnicarF_2021.tse)[c(3, 1, 2)]
-}
-
-if(tool == "HUMAnN"){
-  # assume some reads processed from the abundances of the pathways
-  AsnicarF_2021.tse@colData$reads_processed <- colSums(assay(AsnicarF_2021.tse))
-  
-  # rename first assay
-  assayNames(AsnicarF_2021.tse)[1] <- "counts"
-}
-
+AsnicarF_2021.tse <- format_tool_specific_tse(AsnicarF_2021.tse, tool = tool, data_type = data_type)
 ```
 
 ## Exclude low-reads samples

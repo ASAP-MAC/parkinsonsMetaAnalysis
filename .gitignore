@@ -16,6 +16,12 @@
 # And track .gitignore
 !.gitignore
 
+# render_qmd.sh renders a temp copy per biobakery tool and deletes it when
+# done; if a render gets interrupted these can survive and get whitelisted
+# by the *.qmd rule above, so ignore them explicitly.
+*_MetaPhlAn.qmd
+*_HUMAnN.qmd
+
 # ignore Macintosh's .DS_Store
 .DS_Store
 
