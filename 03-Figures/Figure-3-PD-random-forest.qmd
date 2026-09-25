@@ -19,14 +19,14 @@ res_base_dir <- file.path("..", "02-Analyses", "results", "03-RF-LODO-PD-vs-Cont
 theme_set(theme_bw())
 ```
 
-## Auroc vs 
-
-# AUROC vs gradient
+# AUROC vs N. Samples
 
 ```{r load rf gradient results}
 rf_predictions_gradients <- read_tsv(file.path(res_base_dir, "sample-size-gradient", "sample_size_gradient_res_ranger_relative_abundance.tsv")) %>% 
   mutate(wallen_in_training = grepl("Wallen", trainingDatasets))
 ```
+
+## Color by number of datasets
 
 ```{r}
 sample_gradient.gg <- ggplot() + 
@@ -45,14 +45,21 @@ sample_gradient.gg <- ggplot() +
 sample_gradient.gg
 ```
 
+## No color
+
 ```{r}
-sample_gradient_color_Wallen_in_training.gg <- ggplot() +
-  geom_point(data = rf_predictions_gradients, mapping = aes(x = nTrainingSamples, y = AUROC, color = wallen_in_training)) + 
-  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
-  geom_point(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
-  geom_label(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples - 100, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
+auroc_vs_nSamples.gg <- ggplot() +
+  geom_point(
+    data = rf_predictions_gradients,
+    mapping = aes(x = nTrainingSamples, y = AUROC
+                  # color = wallen_in_training
+                  )
+  ) + 
+  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
+  geom_point(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
+  geom_label(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples - 100, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
   facet_wrap(~testDataset) + 
-  scale_color_manual(values = c("TRUE" = "black", "FALSE" = "gray80")) +
+  # scale_color_manual(values = c("TRUE" = "black", "FALSE" = "gray80")) +
   theme(legend.position = "top", axis.text.x = element_text(hjust = 1, angle = 60)) +
   
   labs(
@@ -60,7 +67,55 @@ sample_gradient_color_Wallen_in_training.gg <- ggplot() +
     color = "WallenZD_2022 in Training Set"
   )
 
-ggsave(plot = sample_gradient_color_Wallen_in_training.gg, filename = file.path("results", "03-rf-with-sample-gradients.svg"), height = 8, width = 8)
+ggsave(plot = auroc_vs_nSamples.gg, filename = file.path("results", "03-rf-with-sample-gradients-x-nSamples.svg"), height = 8, width = 8)
+```
+
+# AUROC vs N. Datasets
+
+```{r generate mean auroc for spline}
+medianAUROC_data.df <- rf_predictions_gradients %>%
+  group_by(testDataset, nTrainingDatasets) %>%
+  reframe(medianAUROC = median(AUROC), .groups = "drop")
+
+```
+
+```{r}
+data_below8 <- rf_predictions_gradients %>% filter(nTrainingDatasets < 8)
+data_at8    <- rf_predictions_gradients %>% filter(nTrainingDatasets == 8)
+
+auroc_vs_nDatasets.gg <- ggplot() +
+  ggbeeswarm::geom_beeswarm(
+    data = data_below8,
+    mapping = aes(x = as.factor(nTrainingDatasets), y = AUROC),
+    cex = 0.5
+  ) +
+  geom_boxplot(
+    data = data_below8,
+    mapping = aes(x = as.factor(nTrainingDatasets), y = AUROC),
+    alpha = 0.4, outliers = FALSE
+  ) +
+  geom_errorbar(
+    data = data_at8,
+    mapping = aes(x = as.factor(nTrainingDatasets),
+                   ymin = AUROC_lowerCI, ymax = AUROC_upperCI),
+    width = 0.2, color = "red2"
+  ) +
+  geom_point(
+    data = data_at8,
+    mapping = aes(x = as.factor(nTrainingDatasets), y = AUROC),
+    size = 3, color = "red2"
+  ) +
+  geom_smooth(
+    data = medianAUROC_data.df,
+    mapping = aes(x = nTrainingDatasets, y = medianAUROC),
+    method = "gam",
+    formula = y ~ s(x, k = 4),
+    se = FALSE
+  ) +
+  facet_wrap(~ testDataset) +
+  labs(x = "Number of datasets in the training set")
+
+ggsave(plot = auroc_vs_nDatasets.gg, filename = file.path("results", "03-rf-with-sample-gradients-x-nDatasets.svg"), height = 8, width = 8)
 ```
 
 # Session Info
