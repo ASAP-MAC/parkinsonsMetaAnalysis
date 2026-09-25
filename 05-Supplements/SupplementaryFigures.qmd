@@ -9,10 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  pMD_data_type: "relative_abundance"
-  pseudocount: 1e-8
-  transform: "asin_sqrt"
-  prevalThresh: 0.05
+  biobakery_tool: "MetaPhlAn"
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
@@ -38,52 +35,55 @@ library(biobakeryUtils)
 theme_set(theme_bw())
 
 # create base directory output
-outdir <- sprintf("SupplementaryFigures-%s", params$pMD_data_type)
+outdir <- sprintf("SupplementaryFigures")
 dir.create(outdir, recursive = TRUE)
+
+pd_color_palette <- c("Control" = "gray60", "PD" = "#D9565CFF")
 
 # generate an incremental figure index
 suppFigIndx <- 1
 ```
 
-## Load and further curate data
+```{r prepare data for plot}
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
-```{r, cache=TRUE}
-all_data.list <- list(
-  Input.tse = read_TSE_from_dir(sprintf("../01-Data/parkinsonsMetagenomicData/pMD_%s.tse", params$pMD_data_type)),
-  NGRC.tse = read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_privateData/Payami_unpublished/NGRC_%s.tse", params$pMD_data_type)),
-  UAB.tse = read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_privateData/Payami_unpublished/UAB_%s.tse", params$pMD_data_type))
-  ) %>% 
-  lapply(function(x) {
-    x@colData$reads_processed <- as.numeric(x@colData$reads_processed)
-    return(x)
-  }
-    )
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
 
-# merge all data and fix colData discrepancies  
-all_data_merged.tse <- reduce(all_data.list, mergeSEs, assay.type = "relative_abundance", missing.values = 0, collapse.rows = TRUE)
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# fix column changes that mia deliberately makes to the SGB column
-colnames(rowData(all_data_merged.tse))[8] <- toupper(colnames(rowData(all_data_merged.tse))[8]) 
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
 
-# filter samples with less than 5 million processed reads
-all_data_merged_more5mil.tse <- all_data_merged.tse[, all_data_merged.tse@colData$reads_processed > 5e6]
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
-# remove all-0 features
-all_data_merged_more5mil.tse <- all_data_merged_more5mil.tse[rowSums(assay(all_data_merged_more5mil.tse)) > 0,]
-
-rbind(dim(all_data_merged.tse), dim(all_data_merged_more5mil.tse)) %>% 
-  set_colnames(c("N Features", "N Samples")) %>% 
-  set_rownames(c("Initial set", "More than 5 M reads processed"))
-
+# prepare data for plot "reads per dataset color by PD status"
+data_for_plot.df <- as.data.frame(colData(Input_parkinson_usableDatasets.tse)) %>% 
+  mutate(million_reads = reads_processed/1e6, study_name = factor(study_name))
 ```
 
 ## Supplementary Figure `r suppFigIndx` - Prevalence and detection filters
+
+Two options are possible: one global and one per-dataset prevalence and abundance
+filter.
+
+The per-dataset prevalence results in fewer features, because some datasets have
+very few samples. This would lead to an unfairly strict filter. 
 
 ```{r}
 preval_curve.df <- data.frame(
   preval_thr = seq(0, 0.9, 0.005),
   nFeatures = sapply(seq(0, 0.9, 0.005), function(thr) {
-    return(nrow(subsetByPrevalent(all_data_merged_more5mil.tse, assay.type = "relative_abundance", prevalence = thr, detection = 0)))  
+    return(nrow(subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = thr, detection = 0)))  
 })
 )
 
@@ -104,7 +104,7 @@ prevalence_curve.gg <- preval_curve.df %>%
 detect_curve.df <- data.frame(
   detection_thr = 10^-c(8:1),
   nFeatures = sapply(10^-c(8:1), function(thr) {
-    return(nrow(subsetByPrevalent(all_data_merged_more5mil.tse, assay.type = "relative_abundance", prevalence = 0, detection = thr)))  
+    return(nrow(subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0, detection = thr)))  
 })
 )
 
@@ -124,31 +124,55 @@ detection_curve.gg <- detect_curve.df %>%
 preval_detect_plots.gg <- ggarrange(prevalence_curve.gg, detection_curve.gg)
 
 
-ggsave(plot = preval_detect_plots.gg, filename = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.svg", outdir, suppFigIndx))
+ggsave(plot = preval_detect_plots.gg, filename = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.svg", outdir, suppFigIndx), height =4.5, width = 9)
+saveRDS(preval_detect_plots.gg, file = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.rds", outdir, suppFigIndx))
 
 suppFigIndx <- suppFigIndx + 1
 preval_detect_plots.gg
+```
+
+## Supplementary figure `r suppFigIndx` - read depth does not vary by PD-Control status
+
+```{r calculate stats and make plot}
+stats.df <- data_for_plot.df %>% 
+  group_by(study_name) %>% 
+  rstatix::t_test(million_reads ~ parkinson_for_analysis) %>% 
+  ungroup() %>%                              # <-- ungroup BEFORE adjusting
+  rstatix::adjust_pvalue(method = "BH") %>% 
+  rstatix::add_xy_position(x = "parkinson_for_analysis") %>% 
+  mutate(
+    p.adj.fmt = format_p_value(p.adj, digits = 2)
+  )
+
+#' this test is a omnibus test that answers the question: 
+#' "are there differences in read depth between PD and Controls once we account
+#' for per-dataset differences in depth (by blocking for dataset)?"
+random_eff_test <- lmerTest::lmer(million_reads ~ parkinson_for_analysis + (1 | study_name), data = data_for_plot.df)
+random_eff_tidy.df <- broom.mixed::tidy(random_eff_test)
+random_eff_params <- unlist(random_eff_tidy.df[random_eff_tidy.df$term == "parkinson_for_analysisPD", c("estimate", "p.value")])
+
+signif_label <- sprintf("Eff. size = %.3f; P = %.3f", random_eff_params[1], random_eff_params[2])
+
+reads_vs_dataset_color_PD <- ggplot(data_for_plot.df, aes(x = study_name, y = million_reads, color = parkinson_for_analysis)) +
+  geom_boxplot() + 
+  ggpubr::stat_pvalue_manual(data = stats.df, x = "study_name", label = "p.adj.fmt") + 
+  scale_color_manual(values = pd_color_palette) + 
+  annotate("text", x = -Inf, y = Inf, label = signif_label, hjust = -0.1, vjust = 1.5) +
+  labs(
+    color = NULL,
+    x = NULL,
+    y = "Million reads per sample"
+  ) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "top")
+
+# save plot
+ggsave(plot = reads_vs_dataset_color_PD, filename = sprintf("%s/SupplementaryFigure %s-Read-depth-by-dataset-and-PD.svg", outdir, suppFigIndx), height = 6, width = 6)
+saveRDS(reads_vs_dataset_color_PD, file = sprintf("%s/SupplementaryFigure %s-Read-depth-by-dataset-and-PD.rds", outdir, suppFigIndx))
+
+suppFigIndx <- suppFigIndx + 1
 
 ```
 
-### Attempt 2 - per-dataset prevalence in each dataset > 1% at any detection limit
-
-```{r}
-tmp <- all_data_merged_more5mil.tse %>% 
-  splitOn("study_name")
-
-tmp2 <- tmp %>% lapply(subsetByPrevalent, assay.type = "relative_abundance", prevalence = 0.01, detection = 0)
-
-# for the "in each dataset" rule, we need to manually calculate the intersection
-intersection_features <- tmp2 %>% lapply(rownames) %>% reduce(intersect)
- 
-tmp3 <- reduce(tmp2, mergeSEs, assay.type = "relative_abundance", collapse.rows = TRUE, missing.values = 0)[intersection_features,]
-tmp3 <- tmp3[rowSums(assay(tmp3)) > 0,]
-tmp3
-```
-
-This produces a much smaller set of features to test. Worth keeping in mind, 
-But a high-pass screening is a good starting point.
 # Session Info
 
 ```{r}
