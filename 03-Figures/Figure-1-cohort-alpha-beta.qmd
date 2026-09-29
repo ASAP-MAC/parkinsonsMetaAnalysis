@@ -100,7 +100,7 @@ data_for_alpha_forest_plot.df <- read_tsv("../02-Analyses/results/02-alphaDiv-me
          # a quick binary variable to make the plot prettier
          is_meta = study_name == "MetaAnalysis",
          # a better looking alphas variable for faceting
-         alpha_for_facets = factor(alpha_metric, levels = c("observed_richness", "faith", "shannon_diversity"), labels = c("Observed richness", "Faith's phylogenetic diversity", "Shannon diversity")))
+         alpha_for_facets = factor(alpha_metric, levels = c("observed_richness", "faith", "shannon_diversity"), labels = c("Observed richness", "Faith phylogenetic diversity", "Shannon diversity")))
 
 alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Beta, y = study_name)) +
   geom_vline(xintercept = 0, lty = "dashed", color = "gray30") +
@@ -210,9 +210,9 @@ NMDS_plot_col_parkinson
 # Figure 1 plot panel
 
 ```{r build figure 1 panel}
-bottom_part <- ggarrange(alpha_meta_analysis_plot.gg, PCoA_plot_col_parkinson, labels = c("b", "c"))
+bottom_part <- ggarrange(alpha_meta_analysis_plot.gg, PCoA_plot_col_parkinson, labels = c("b", "c"), widths = c(1, 0.6))
 
-figure_1_panel <- ggarrange(world_n_samples_heatmap.gg, bottom_part, nrow = 2, labels = c("a", ""))
+figure_1_panel <- ggarrange(world_n_samples_heatmap.gg, bottom_part, nrow = 2, labels = c("a", ""), heights = c(1, 0.8))
 
 figure_1_panel
 ```
