@@ -1,0 +1,229 @@
+---
+title: "Figure 1 - world map, alpha, beta"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# ------ prepare outdir --------
+outdir <- "results"
+dir.create(outdir, recursive = TRUE)
+# ------------------------------
+
+library(biobakeryUtils)
+library(SummarizedExperiment)
+library(tidyverse)
+library(knitr)
+library(ggpubr)
+library(maps)
+
+theme_set(theme_bw())
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+palette_parkinson_for_analysis <- c("PD" = "#EBA07EFF", "Control" = "#5D74A5FF")
+
+Input.tse
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+# Panel A - world heatmap
+
+```{r}
+# get world map coordinates
+world_map <- map_data("world")
+# remove antarctica because we don't have samples and it complicates the scaling
+world_map <- filter(world_map, region != "Antarctica")
+
+# get pMD geographic data ready for plot
+pMD_samples_by_region <- Input_parkinson_usableDatasets.tse$Country %>%
+  gsub("Deep South ", "", ., fixed = TRUE) %>% 
+  table() %>% 
+  as.data.frame() %>% 
+  set_names(c("region", "n_samples"))
+
+# enrich world_map data.frame with n_samples
+world_map <- left_join(world_map, pMD_samples_by_region, by = "region") %>% 
+  # force 0 where no samples are available AND where Alaska is
+  mutate(n_samples = case_when(is.na(n_samples) | subregion == "Alaska" ~ 0, 
+                               TRUE ~ n_samples)
+         )
+
+# make the plot of the world
+world_n_samples_heatmap.gg <- ggplot(world_map, aes(x = long, y = lat, fill = n_samples > 0, group = group)) + 
+  geom_polygon(color = "black", linewidth = 0.2) + 
+  scale_fill_manual(values = c("white", "#EBA07EFF")) +
+  theme_void() + theme(legend.position = "none")
+
+world_n_samples_heatmap.gg
+```
+
+## Panel B - Alpha diversity meta-analysis
+
+```{r}
+plotting_levels <- c("MetaAnalysis", "WallenZD_2022", "QianY_2020", "NishiwakiH_2024", 
+"MaoL_2021", "JoS_2022", "DuruIC_2024", "BoktorJC_2023.2", "BoktorJC_2023", 
+"BedarfJR_2017")
+
+data_for_alpha_forest_plot.df <- read_tsv("../02-Analyses/results/02-alphaDiv-meta-analysis/MetaPhlAn/alpha-meta-data-for-plot.tsv") %>% 
+  mutate(study_name = factor(study_name, levels = plotting_levels),
+         # a quick binary variable to make the plot prettier
+         is_meta = study_name == "MetaAnalysis",
+         # a better looking alphas variable for faceting
+         alpha_for_facets = factor(alpha_metric, levels = c("observed_richness", "faith", "shannon_diversity"), labels = c("Observed richness", "Faith's phylogenetic diversity", "Shannon diversity")))
+
+alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Beta, y = study_name)) +
+  geom_vline(xintercept = 0, lty = "dashed", color = "gray30") +
+  # separator between the individual studies and the pooled estimate
+  geom_hline(yintercept = 1.5, color = "gray70", linewidth = 0.4) +
+  geom_errorbar(aes(xmin = CI.L, xmax = CI.R, linewidth = is_meta),
+                orientation = "y", width = 0.2) +
+  geom_point(aes(shape = is_meta, size = is_meta, fill = is_meta), stroke = 0.8) +
+  scale_shape_manual(values = c(`FALSE` = 21, `TRUE` = 23), guide = "none") +
+  scale_size_manual(values = c(`FALSE` = 3, `TRUE` = 4.5), guide = "none") +
+  scale_fill_manual(values = c(`FALSE` = "white", `TRUE` = "black"), guide = "none") +
+  scale_linewidth_manual(values = c(`FALSE` = 0.5, `TRUE` = 0.9), guide = "none") +
+  # zero expansion so panels have no built-in padding on the y axis
+  scale_y_discrete(expand = expansion(add = 0.5)) +
+  scale_x_continuous(expand = expansion(mult = 0.05)) +
+  facet_grid(cols = vars(alpha_for_facets), scales = "free_x") +
+  labs(x = "Effect size (Beta) with 95% CI", y = NULL) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.spacing = unit(0, "lines"),          # no gap between facets
+    panel.grid.major.x = element_line(color = "gray80"),
+    strip.background = element_rect(fill = "white", color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.ticks.y = element_blank()
+  )
+```
+
+## Panel C - Beta diversity PCoA
+
+```{r MDS params}
+beta.method <- "bray"
+beta.name <- "bray"
+```
+
+```{r MDS plots}
+Input_parkinson_usableDatasets.tse <- addMDS(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", method = beta.method, name = beta.name)
+
+variances_explained <- attr(reducedDim(Input_parkinson_usableDatasets.tse, beta.name), "eig")
+prop_variances_explained <- variances_explained/sum(variances_explained)
+
+betadiv_data.df <- cbind.data.frame(as.data.frame(colData(Input_parkinson_usableDatasets.tse)), reducedDim(Input_parkinson_usableDatasets.tse, beta.name) %>% as.data.frame() %>% set_names(paste("MDS", 1:ncol(.))))
+
+colorVars <- c("Country", "study_name", "parkinson_for_analysis")
+
+PCoA_plot_col_parkinson <- betadiv_data.df %>%
+    ggplot(aes(x = `MDS 1`, y = `MDS 2`, fill = parkinson_for_analysis, color = parkinson_for_analysis)) + 
+  geom_point(pch = 21, size = 2.5, stroke = 0.5, color = "black") +
+  stat_ellipse(show.legend = FALSE) +
+  scale_color_manual(values = palette_parkinson_for_analysis, aesthetics = c("color", "fill")) +
+  labs(color = NULL,
+       fill = NULL,
+       x = paste0("PCoA Axis 1 [", round(prop_variances_explained[1]*100, 1), "%]"),
+       y = paste0("PCoA Axis 2 [", round(prop_variances_explained[2]*100, 2), "%]")
+  ) +
+  theme(
+  legend.position = "inside",
+  legend.position.inside = c(0, 1),
+  legend.justification = c(0, 1),  # anchor point of the legend box
+  legend.background = element_rect(fill = alpha("white", 0.7), color = "gray50")
+)
+
+PCoA_plot_col_parkinson
+```
+
+## Panel C alt - Beta diversity NMDS
+
+```{r}
+Input_parkinson_usableDatasets.tse <- addNMDS(
+  Input_parkinson_usableDatasets.tse,
+  assay.type  = "relative_abundance",
+  method      = beta.method,   # e.g. "bray"
+  name        = beta.name,
+  ncomponents = 2
+)
+
+# Stress: mia stores it as an attribute of the reducedDim in recent versions
+nmds_stress <- attr(reducedDim(Input_parkinson_usableDatasets.tse, beta.name), "Stress")
+
+betadiv_data.df <- cbind.data.frame(
+  as.data.frame(colData(Input_parkinson_usableDatasets.tse)),
+  reducedDim(Input_parkinson_usableDatasets.tse, beta.name) %>%
+    as.data.frame() %>%
+    set_names(paste("NMDS", 1:ncol(.)))
+)
+
+NMDS_plot_col_parkinson <- betadiv_data.df %>%
+  ggplot(aes(x = `NMDS 1`, y = `NMDS 2`, fill = parkinson_for_analysis, color = parkinson_for_analysis)) +
+  geom_point(pch = 21, size = 2.5, stroke = 0.5, color = "black") +
+  stat_ellipse(show.legend = FALSE) +
+  scale_color_manual(values = palette_parkinson_for_analysis, aesthetics = c("color", "fill")) +
+  labs(color = NULL,
+       fill = NULL,
+       x = "NMDS Axis 1",
+       y = "NMDS Axis 2",
+       subtitle = paste0("Stress = ", round(nmds_stress, 3))
+  ) +
+  theme(
+    legend.position = "inside",
+    legend.position.inside = c(0, 1),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = alpha("white", 0.7), color = "gray50")
+  )
+
+NMDS_plot_col_parkinson
+```
+
+# Figure 1 plot panel
+
+```{r build figure 1 panel}
+bottom_part <- ggarrange(alpha_meta_analysis_plot.gg, PCoA_plot_col_parkinson, labels = c("b", "c"))
+
+figure_1_panel <- ggarrange(world_n_samples_heatmap.gg, bottom_part, nrow = 2, labels = c("a", ""))
+
+figure_1_panel
+```
+
+```{r save figure 1 panel}
+ggsave(plot = figure_1_panel, height = 8, width = 10, filename = file.path(outdir, "Figure-1-worldMap-alpha-beta.svg"))
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
+

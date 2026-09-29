@@ -1,0 +1,185 @@
+---
+title: "Study tables, MetaPhlAn alpha and beta diversities"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# ------ prepare outdir --------
+outdir <- file.path("results", "02-alphaDiv-meta-analysis", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE)
+# ------------------------------
+
+library(meta)
+library(limma)
+library(biobakeryUtils)
+library(mia)
+library(openxlsx2)
+library(tidyverse)
+library(knitr)
+library(VennDetail)
+
+theme_set(theme_light())
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+Input.tse
+```
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+
+# drop unused level of the parkinson_for_analysis
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+# Alpha diversities
+
+## Rrefaction and index calculation
+
+```{r calculate alpha diverity metrics}
+if(params$biobakery_tool == "MetaPhlAn"){
+  alphas <- c("observed_richness", "shannon_diversity", "faith")
+  Input_parkinson_usableDatasets.tse <- AddPhyloTree_to_mpa_tse(Input_parkinson_usableDatasets.tse, chocophlan_datestamp = "202403")
+} else {
+  alphas <- c("observed_richness", "shannon_diversity")  
+}
+
+# Round counts for rarefaction, minimal change in results for this
+assay(Input_parkinson_usableDatasets.tse, "counts_rounded") <- round(assay(Input_parkinson_usableDatasets.tse), 0)
+
+Input_parkinson_usableDatasets_raref.tse <- mia::rarefyAssay(Input_parkinson_usableDatasets.tse, assay.type = "counts_rounded", sample = 2e6, name = "raref_2M")
+
+# Calculate alphas
+Input_parkinson_usableDatasets_raref.tse <- addAlpha(Input_parkinson_usableDatasets_raref.tse, assay.type = "raref_2M", index = alphas)
+```
+
+## Single dataset analysis with `lm`
+
+$$
+alpha \sim parkinson
+$$
+
+```{r lm of alpha vs PD per dataset}
+per_dataset_alpha_results_lm.tb <- colData(Input_parkinson_usableDatasets_raref.tse) %>%
+  as.data.frame() %>%
+  split(.$study_name) %>%
+  lapply(function(x.df) {
+    lapply(alphas, function(alpha) {
+      alpha.lm <- lm(as.formula(sprintf("%s ~ parkinson_for_analysis", alpha)), data = x.df)
+      broom::tidy(alpha.lm) %>%
+        filter(term == "parkinson_for_analysisPD") %>%
+        # column order required by metaAnalyze: grouping, feature ID, N, Beta, SE
+        transmute(alpha_metric = alpha, N = nobs(alpha.lm), Beta = estimate, SE = std.error, t = statistic, P.Value = p.value)
+    }) %>%
+      bind_rows() %>%
+      mutate(P.Value.adj = p.adjust(P.Value, "BH"))
+  }) %>% bind_rows(.id = "study_name")
+```
+
+## meta-analyze results (`REML`)
+
+```{r meta-analysis alpha lm}
+MetaAnalysis_results_alpha <- metaAnalyze(res.df = per_dataset_alpha_results_lm.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+
+kable(MetaAnalysis_results_alpha$MetaAnalysis, digits = 3)
+```
+
+## Write raw results as excel file
+
+```{r write alpha div as excel}
+write_xlsx(MetaAnalysis_results_alpha, file = file.path(outdir, "alpha-diversities-meta-analysis_raref-2M.xlsx"))
+```
+
+
+## write results formatted for plotting
+
+```{r alpha meta-analysis results}
+metaAnalysis_essentials.df <- MetaAnalysis_results_alpha$MetaAnalysis %>% 
+  transmute(
+    study_name = "MetaAnalysis",
+    alpha_metric,
+    Beta = Beta.pool, 
+    SE = SE.pool,
+    CI.L,
+    CI.R,
+    Het.I2
+  )
+
+per_dataset_alpha_results_lm_subset.tb <- per_dataset_alpha_results_lm.tb %>% 
+  transmute(study_name = study_name, 
+            alpha_metric,
+            Beta, 
+            SE, 
+            CI.L = Beta - SE*1.96,
+            CI.R = Beta + SE*1.96,
+            Het.I2 = 0
+            )
+
+data_for_alpha_forest_plot.df <- rbind(metaAnalysis_essentials.df, per_dataset_alpha_results_lm_subset.tb) 
+
+write_tsv(data_for_alpha_forest_plot.df, file = file.path(outdir, "alpha-meta-data-for-plot.tsv"))
+```
+
+### PERMANOVA
+
+$$
+Bray-Curtis \sim study~name + parkinson(Yes/No) + reads~processed
+$$
+
+```{r MDS params}
+beta.method <- "bray"
+beta.name <- "bray"
+```
+
+```{r PERMANOVA, cache=TRUE}
+PERMANOVA_name <- paste(beta.name, "PERMANOVA", sep = "_")
+
+Input_parkinson_usableDatasets.tse <- addPERMANOVA(
+  Input_parkinson_usableDatasets.tse,
+  assay.type = "relative_abundance",
+  method = beta.method,
+  name = PERMANOVA_name,
+  formula = x ~ study_name + parkinson_for_analysis + reads_processed,
+  by = "margin",
+  permutations = 2000, 
+  parallel = 8
+)
+
+bray_permanova <- PERMANOVA_to_table(Input_parkinson_usableDatasets.tse, name = PERMANOVA_name)
+
+write_tsv(bray_permanova, file = file.path(outdir, "bray-permanova.tsv"))
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

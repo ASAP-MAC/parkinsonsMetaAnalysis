@@ -13,6 +13,7 @@ editor: source
 ```{r setup, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(biobakeryUtils)
+
 suppTabIndex <- 1
 outdir <- "Supplementary Tables"
 dir.create(outdir)
@@ -21,7 +22,7 @@ dir.create(outdir)
 ## Supplementary Table `r suppTabIndex` - step by step feature and sample exclusions
 
 ```{r}
-invisible(file.copy("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv", sprintf("%s/Table S%s - step by step feature and sample exclusions.tsv", outdir, suppTabIndex)))
+invisible(file.copy("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv", file.path(outdir, sprintf("Table S%s - step by step feature and sample exclusions.tsv", suppTabIndex))))
 
 suppTabIndex <- suppTabIndex + 1
           
@@ -31,18 +32,27 @@ suppTabIndex <- suppTabIndex + 1
 
 ```{r}
 # use this for a richer source of info
-# https://raw.githubusercontent.com/ASAP-MAC/parkinsons_data_search/refs/heads/main/parkinson_shotgun_datasets.tsv
+shotgun_datasets <- read_tsv("https://raw.githubusercontent.com/ASAP-MAC/parkinsons_data_search/refs/heads/main/parkinson_shotgun_datasets.tsv") %>% 
+  transmute(study_name = `cMD proposed code`,
+            doi = `doi.org link`)
 
 input.tse <- read_TSE_from_dir("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-MetaPhlAn.tse/")
   
 # extract colData
 input.df <- as.data.frame(colData(input.tse))
 
-datasets_accessions <- input.df %>% select(study_name, BioProject) %>% distinct()
+datasets_accessions <- input.df %>% 
+  select(study_name, BioProject) %>% 
+  distinct() %>% 
+  left_join(shotgun_datasets, by = "study_name") %>% 
+  rename(Study = study_nameß)
 
-# fix Asnicar's missing dataset accession
-invisible(file.copy("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/00-filtering-steps.tsv", sprintf("%s/Table S%s - step by step feature and sample exclusions.tsv", outdir, suppTabIndex)))
+# maunal fixes to missing data:
+datasets_accessions$BioProject[datasets_accessions$study_name == "AsnicarF_2021"] <- "PRJEB39223"
+datasets_accessions$doi[datasets_accessions$study_name == "AsnicarF_2021"] <- "https://doi.org/10.1038/s41591-020-01183-8"
+datasets_accessions$doi[datasets_accessions$study_name == "BoktorJC_2023.2"] <- "https://doi.org/10.1002/mds.29300"
 
+write_tsv(datasets_accessions, file = file.path(outdir, sprintf("Table S%s - List of studies included in the meta-analysis.tsv", suppTabIndex)))
 suppTabIndex <- suppTabIndex + 1
 ```
 

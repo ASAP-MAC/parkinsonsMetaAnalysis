@@ -1,0 +1,142 @@
+---
+title: "PD-Control table 1"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format: docx
+params:
+  biobakery_tool: "MetaPhlAn"
+---
+
+```{r setup}
+# ------ prepare outdir --------
+outdir <- file.path("results", "01-demographic-tables", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE,showWarnings = FALSE)
+# ------------------------------
+library(jsonlite)
+library(knitr)
+library(gtsummary)
+library(ggtext)
+library(ggsci)
+library(mia)
+library(tidyverse)
+library(biobakeryUtils)
+library(ChocoPhlAnTaxonomies)
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+
+# for the sake of the data representation, switch NA with Unknown
+Input.tse$sex[is.na(Input.tse$sex)] <- "Unknown"
+
+# invert levels of PD and Control
+levels(Input.tse$parkinson_for_analysis) <- c("PD", "Control", "bluePoo")
+Input.tse
+```
+
+# `parkinsonsMetagenomicData` kept after each filtering step
+
+```{r}
+metaphlan_filters <- read_json("~/parkinsonMetaAnalysis_data/01-pMD_datasets/00-pMD_MetaPhlAn_sample_filtering_steps.json")
+humann_filters <- read_json("~/parkinsonMetaAnalysis_data/01-pMD_datasets/00-pMD_HUMAnN_sample_filtering_steps.json")
+
+samples_kept_after_filtering.df <- tibble(
+  filterCondition = names(metaphlan_filters),
+  MetaPhlAn = sapply(metaphlan_filters, length),
+  HUMAnN = sapply(humann_filters, length)
+)
+
+kable(samples_kept_after_filtering.df)
+```
+
+# Table 1 - dataset x PD, unavailable covariates limit meta-analysis strength
+
+## All samples available after filtering
+
+```{r table of samples per condition}
+table1_complete <- Input.tse %>% 
+  colData() %>% 
+  as.data.frame() %>% 
+  select(`Study` = study_name, Country, `Age Gr.` = age_group, Sex = sex, `N. diseases` = number_diseases, parkinson_for_analysis) %>% 
+   tbl_summary(
+    by = parkinson_for_analysis, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall() %>% # Add an overall column
+  modify_header(label ~ "**Characteristic**") # Customize header
+
+table1_complete
+```
+
+## Datasets with available age and sex information
+
+```{r table of samples per condition with both sex and age_group available}
+table1_availSex <- Input.tse %>% 
+  colData() %>% 
+  as.data.frame() %>% 
+  filter(complete.cases(select(., age_group, sex))) %>% 
+  select(`Study` = study_name, Country, `Age Gr.` = age_group, Sex = sex, `N. diseases` = number_diseases, parkinson_for_analysis) %>% 
+   tbl_summary(
+    by = parkinson_for_analysis, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall() %>% # Add an overall column
+  modify_header(label ~ "**Characteristic**") # Customize header
+```
+
+## Datasets with at least 10 individuals in PD and Control groups
+
+```{r filter dataset for parkinson meta-analysis}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# Each dataset should have at least 30 samples in cases and 30 in controls
+ok_datasets <- Input_parkinson.tse@colData %>% 
+  as.data.frame() %>% 
+  group_by(study_name) %>% 
+  filter(
+    sum(parkinson_for_analysis == "Control") > 10,
+    sum(parkinson_for_analysis == "PD") > 10
+  )
+
+## filter TSE to restrict to 'ok' datasets 
+Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# ## Prevalence and detection filter
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+
+Input_parkinson_usableDatasets.tse
+```
+
+```{r table of samples per condition with sufficient case/ctrl samples}
+
+table1_ok_Parkinson <- Input_parkinson_usableDatasets.tse %>% 
+  colData() %>% 
+  as.data.frame() %>% 
+  select(`Study` = study_name, Country, `Age Group` = age_group, Sex = sex, `N. comorbidities` = comorbidities, parkinson_for_analysis) %>% 
+   tbl_summary(
+    by = parkinson_for_analysis, # Optional: stratify by a variable
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    missing_text = "Missing"
+  ) %>%
+  add_overall(last = TRUE) %>% # Add an overall column
+  add_p(
+    test = list(all_continuous()  ~ "wilcox.test",
+                all_categorical() ~ "chisq.test")
+  ) %>%
+  bold_p(t = 0.05) %>%
+  bold_labels() %>% 
+  modify_header(label ~ "**Characteristic**")
+
+table1_ok_Parkinson
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
