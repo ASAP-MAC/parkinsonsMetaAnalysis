@@ -1,6 +1,6 @@
 # parkinsonMetaAnalysis
 A package for the meta-analysis of shotgun datasets
-
+**link to manuscript** [here](https://cuny907-my.sharepoint.com/:w:/r/personal/giacomo_antonello53_login_cuny_edu/Documents/git_repos/parkinsonsMetaAnalysis/99-manuscript-and-presentation/Manuscript-Meta-Analysis.docx?d=wdf4ef39cb8604d4cb4501cea6072cd58&csf=1&web=1&e=1RHgHs)
 # 2025-02-21
 
 This repository will contain meta-analysis contents and concepts 
