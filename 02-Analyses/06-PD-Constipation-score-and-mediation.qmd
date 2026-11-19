@@ -213,7 +213,7 @@ mediations.list <- future_map(
         treat    = "parkinson_for_analysis",
         mediator = "constipation_for_analysis",
         boot     = FALSE,
-        sims     = 1000
+        sims     = 10000
       )
     )
     

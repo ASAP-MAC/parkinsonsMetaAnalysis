@@ -65,7 +65,7 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have at least 30 samples in cases and 30 in controls
+# Each dataset should have more than 10 samples in cases and more than 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
