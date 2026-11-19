@@ -8,14 +8,18 @@ format:
     toc: true
     toc-depth: 2
 editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+  outdir: "results/Figure-1-worldMap-alpha-beta"
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- "results"
+outdir <- params$outdir
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
+library(mia)
 library(biobakeryUtils)
 library(SummarizedExperiment)
 library(tidyverse)
@@ -26,7 +30,7 @@ library(maps)
 theme_set(theme_bw())
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
-palette_parkinson_for_analysis <- c("PD" = "#EBA07EFF", "Control" = "#5D74A5FF")
+palette_parkinson_for_analysis <- c("PD" = "#EBA07EFF", "Control" = "gray50")
 
 Input.tse
 ```
@@ -39,7 +43,7 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have at least 30 samples in cases and 30 in controls
+# Each dataset should have more than 10 samples in cases and more than 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
@@ -111,7 +115,7 @@ alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Bet
   geom_point(aes(shape = is_meta, size = is_meta, fill = is_meta), stroke = 0.8) +
   scale_shape_manual(values = c(`FALSE` = 21, `TRUE` = 23), guide = "none") +
   scale_size_manual(values = c(`FALSE` = 3, `TRUE` = 4.5), guide = "none") +
-  scale_fill_manual(values = c(`FALSE` = "white", `TRUE` = "black"), guide = "none") +
+  scale_fill_manual(values = c(`FALSE` = "white", `TRUE` = "#EBA07EFF"), guide = "none") +
   scale_linewidth_manual(values = c(`FALSE` = 0.5, `TRUE` = 0.9), guide = "none") +
   # zero expansion so panels have no built-in padding on the y axis
   scale_y_discrete(expand = expansion(add = 0.5)) +
@@ -128,89 +132,44 @@ alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Bet
   )
 ```
 
-## Panel C - Beta diversity PCoA
+## Panel C - Beta diversity, partial dbRDA (Bray-Curtis | study)
 
-```{r MDS params}
-beta.method <- "bray"
-beta.name <- "bray"
-```
+Scores computed in `02-Analyses/02-alpha_beta_diversity.qmd`. dbRDA1 is the PD-constrained axis after removing the study effect; MDS1 is the first residual axis. The pooled within-study PERMANOVA R2 for PD is shown as subtitle.
 
-```{r MDS plots}
-Input_parkinson_usableDatasets.tse <- addMDS(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", method = beta.method, name = beta.name)
+```{r dbRDA plot}
+beta_results_dir <- file.path("../02-Analyses/results/02-alphaDiv-meta-analysis", params$biobakery_tool)
 
-variances_explained <- attr(reducedDim(Input_parkinson_usableDatasets.tse, beta.name), "eig")
-prop_variances_explained <- variances_explained/sum(variances_explained)
+dbrda_bray.df <- read_tsv(file.path(beta_results_dir, "beta-partial-dbRDA-scores.tsv")) %>%
+  filter(metric == "bray")
 
-betadiv_data.df <- cbind.data.frame(as.data.frame(colData(Input_parkinson_usableDatasets.tse)), reducedDim(Input_parkinson_usableDatasets.tse, beta.name) %>% as.data.frame() %>% set_names(paste("MDS", 1:ncol(.))))
+bray_pd_permanova <- read_tsv(file.path(beta_results_dir, "beta-pooled-permanova-within-study.tsv")) %>%
+  filter(metric == "bray", term == "parkinson_for_analysis")
 
-colorVars <- c("Country", "study_name", "parkinson_for_analysis")
-
-PCoA_plot_col_parkinson <- betadiv_data.df %>%
-    ggplot(aes(x = `MDS 1`, y = `MDS 2`, fill = parkinson_for_analysis, color = parkinson_for_analysis)) + 
+dbRDA_plot_col_parkinson <- ggplot(dbrda_bray.df, aes(x = Axis1, y = Axis2, fill = parkinson_for_analysis, color = parkinson_for_analysis)) +
   geom_point(pch = 21, size = 2.5, stroke = 0.5, color = "black") +
   stat_ellipse(show.legend = FALSE) +
   scale_color_manual(values = palette_parkinson_for_analysis, aesthetics = c("color", "fill")) +
   labs(color = NULL,
        fill = NULL,
-       x = paste0("PCoA Axis 1 [", round(prop_variances_explained[1]*100, 1), "%]"),
-       y = paste0("PCoA Axis 2 [", round(prop_variances_explained[2]*100, 2), "%]")
-  ) +
-  theme(
-  legend.position = "inside",
-  legend.position.inside = c(0, 1),
-  legend.justification = c(0, 1),  # anchor point of the legend box
-  legend.background = element_rect(fill = alpha("white", 0.7), color = "gray50")
-)
-
-PCoA_plot_col_parkinson
-```
-
-## Panel C alt - Beta diversity NMDS
-
-```{r}
-Input_parkinson_usableDatasets.tse <- addNMDS(
-  Input_parkinson_usableDatasets.tse,
-  assay.type  = "relative_abundance",
-  method      = beta.method,   # e.g. "bray"
-  name        = beta.name,
-  ncomponents = 2
-)
-
-# Stress: mia stores it as an attribute of the reducedDim in recent versions
-nmds_stress <- attr(reducedDim(Input_parkinson_usableDatasets.tse, beta.name), "Stress")
-
-betadiv_data.df <- cbind.data.frame(
-  as.data.frame(colData(Input_parkinson_usableDatasets.tse)),
-  reducedDim(Input_parkinson_usableDatasets.tse, beta.name) %>%
-    as.data.frame() %>%
-    set_names(paste("NMDS", 1:ncol(.)))
-)
-
-NMDS_plot_col_parkinson <- betadiv_data.df %>%
-  ggplot(aes(x = `NMDS 1`, y = `NMDS 2`, fill = parkinson_for_analysis, color = parkinson_for_analysis)) +
-  geom_point(pch = 21, size = 2.5, stroke = 0.5, color = "black") +
-  stat_ellipse(show.legend = FALSE) +
-  scale_color_manual(values = palette_parkinson_for_analysis, aesthetics = c("color", "fill")) +
-  labs(color = NULL,
-       fill = NULL,
-       x = "NMDS Axis 1",
-       y = "NMDS Axis 2",
-       subtitle = paste0("Stress = ", round(nmds_stress, 3))
+       x = paste0("dbRDA1, PD | study [", round(dbrda_bray.df$Axis1_prop[1] * 100, 1), "%]"),
+       y = paste0("MDS1, residual [", round(dbrda_bray.df$Axis2_prop[1] * 100, 1), "%]"),
+       # subtitle = sprintf("PERMANOVA (in-study perm.): R² = %.3f, p = %.3g",
+       #                    bray_pd_permanova$R2, bray_pd_permanova$p.value)
   ) +
   theme(
     legend.position = "inside",
-    legend.position.inside = c(0, 1),
-    legend.justification = c(0, 1),
+    legend.position.inside = c(1, 1),
+    legend.justification = c(1, 1),
     legend.background = element_rect(fill = alpha("white", 0.7), color = "gray50")
   )
 
-NMDS_plot_col_parkinson
+dbRDA_plot_col_parkinson
 ```
 
 # Figure 1 plot panel
 
 ```{r build figure 1 panel}
-bottom_part <- ggarrange(alpha_meta_analysis_plot.gg, PCoA_plot_col_parkinson, labels = c("b", "c"), widths = c(1, 0.6))
+bottom_part <- ggarrange(alpha_meta_analysis_plot.gg, dbRDA_plot_col_parkinson, labels = c("b", "c"), widths = c(1, 0.6))
 
 figure_1_panel <- ggarrange(world_n_samples_heatmap.gg, bottom_part, nrow = 2, labels = c("a", ""), heights = c(1, 0.8))
 
