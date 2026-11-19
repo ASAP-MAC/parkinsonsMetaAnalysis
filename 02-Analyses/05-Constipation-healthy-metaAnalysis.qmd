@@ -9,7 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_tool: "HUMAnN"
+  biobakery_tool: "MetaPhlAn"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
@@ -41,6 +41,9 @@ Input_constipation_healthy.tse <- Input.tse[, Input.tse$disease == "Healthy"]
 
 # filter for available constipation information
 Input_constipation_healthy.tse <- Input_constipation_healthy.tse[,!is.na(Input_constipation_healthy.tse$constipation_for_analysis)]
+
+# remove BoktorJC_2023.2, outlier in the PD meta-analysis
+Input_constipation_healthy.tse <- Input_constipation_healthy.tse[, Input_constipation_healthy.tse$study_name != "BoktorJC_2023.2"]
 
 # Prevalence and detection filter
 Input_constipation_healthy.tse <- subsetByPrevalent(Input_constipation_healthy.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
