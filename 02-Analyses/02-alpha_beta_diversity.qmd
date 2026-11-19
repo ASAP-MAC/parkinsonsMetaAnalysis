@@ -14,14 +14,16 @@ params:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "02-alphaDiv-meta-analysis", params$biobakery_tool)
+outdir <- file.path("results", "02-alpha_beta_diversity", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
 library(meta)
 library(limma)
 library(biobakeryUtils)
+library(ChocoPhlAnTaxonomies)
 library(mia)
+library(vegan)
 library(openxlsx2)
 library(tidyverse)
 library(knitr)
@@ -42,7 +44,7 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have at least 30 samples in cases and 30 in controls
+# Each dataset should have more than 10 samples in cases and more than 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
@@ -62,7 +64,7 @@ Input_parkinson_usableDatasets.tse
 
 # Alpha diversities
 
-## Rrefaction and index calculation
+## Rarefaction and alpha index calculation
 
 ```{r calculate alpha diverity metrics}
 if(params$biobakery_tool == "MetaPhlAn"){
@@ -118,7 +120,6 @@ kable(MetaAnalysis_results_alpha$MetaAnalysis, digits = 3)
 write_xlsx(MetaAnalysis_results_alpha, file = file.path(outdir, "alpha-diversities-meta-analysis_raref-2M.xlsx"))
 ```
 
-
 ## write results formatted for plotting
 
 ```{r alpha meta-analysis results}
@@ -148,34 +149,247 @@ data_for_alpha_forest_plot.df <- rbind(metaAnalysis_essentials.df, per_dataset_a
 write_tsv(data_for_alpha_forest_plot.df, file = file.path(outdir, "alpha-meta-data-for-plot.tsv"))
 ```
 
-### PERMANOVA
+# Beta diversities
 
-$$
-Bray-Curtis \sim study~name + parkinson(Yes/No) + reads~processed
-$$
+Two dissimilarities are analyzed on `relative_abundance`:
 
-```{r MDS params}
-beta.method <- "bray"
-beta.name <- "bray"
+- **Bray-Curtis**: primary metric, phylogeny-agnostic.
+- **Weighted UniFrac**: sensitivity analysis, phylogeny-aware (MetaPhlAn only, uses the ChocoPhlAn SGB tree attached above).
+
+Distance matrices are computed once and reused for every test below.
+
+```{r beta params}
+beta_metrics <- c(bray = "Bray-Curtis")
+if (params$biobakery_tool == "MetaPhlAn") {
+  stopifnot("rowTree missing: run the alpha chunk that attaches the phylogeny first" =
+              !is.null(rowTree(Input_parkinson_usableDatasets.tse)))
+  beta_metrics <- c(beta_metrics, wunifrac = "Weighted UniFrac")
+}
+
+n_perm <- 1999
+
+# broom does not know the SumOfSqs/R2 columns of adonis2 and warns; output is correct
+tidy_adonis <- function(x) suppressWarnings(broom::tidy(x))
+
+beta_meta.df <- colData(Input_parkinson_usableDatasets.tse) %>%
+  as.data.frame() %>%
+  select(study_name, parkinson_for_analysis) %>%
+  mutate(study_name = droplevels(factor(study_name)))
+
+stopifnot("NA in PERMANOVA covariates" = !anyNA(beta_meta.df))
 ```
 
-```{r PERMANOVA, cache=TRUE}
-PERMANOVA_name <- paste(beta.name, "PERMANOVA", sep = "_")
+```{r beta distances, cache=TRUE}
+beta_dist.list <- lapply(names(beta_metrics), function(metric) {
+  if (metric == "wunifrac") {
+    getDissimilarity(Input_parkinson_usableDatasets.tse, method = "unifrac",
+                     assay.type = "relative_abundance", weighted = TRUE)
+  } else {
+    getDissimilarity(Input_parkinson_usableDatasets.tse, method = metric,
+                     assay.type = "relative_abundance")
+  }
+}) %>% set_names(names(beta_metrics))
 
-Input_parkinson_usableDatasets.tse <- addPERMANOVA(
-  Input_parkinson_usableDatasets.tse,
-  assay.type = "relative_abundance",
-  method = beta.method,
-  name = PERMANOVA_name,
-  formula = x ~ study_name + parkinson_for_analysis + reads_processed,
-  by = "margin",
-  permutations = 2000, 
-  parallel = 8
-)
+# sanity check: sample order must match the metadata
+stopifnot(all(sapply(beta_dist.list, function(d) identical(labels(d), rownames(beta_meta.df)))))
+```
 
-bray_permanova <- PERMANOVA_to_table(Input_parkinson_usableDatasets.tse, name = PERMANOVA_name)
+## Pooled PERMANOVA, permutations restricted within study
 
-write_tsv(bray_permanova, file = file.path(outdir, "bray-permanova.tsv"))
+$$
+distance \sim study~name + parkinson(Yes/No)
+$$
+
+PD labels are shuffled only within each study (`how(blocks = study_name)`), so the null distribution keeps the between-study structure intact. `study_name` stays in the model so that between-study variation is removed from the residuals and PD is tested within studies (`by = "margin"`). Its own marginal test is not meaningful under within-study permutations (its labels never move), so the `study_name` row is dropped from the reported table.
+
+```{r pooled PERMANOVA, cache=TRUE}
+set.seed(1234)
+perm_within_study <- how(blocks = beta_meta.df$study_name, nperm = n_perm)
+
+pooled_permanova.tb <- lapply(names(beta_metrics), function(metric) {
+  vegan::adonis2(
+    beta_dist.list[[metric]] ~ study_name + parkinson_for_analysis,
+    data = beta_meta.df,
+    by = "margin",
+    permutations = perm_within_study,
+    parallel = 8
+  ) %>%
+    tidy_adonis() %>%
+    # study_name is an adjustment term only, its test is not interpretable
+    filter(term != "study_name") %>%
+    mutate(metric = metric, .before = 1)
+}) %>% bind_rows()
+
+kable(pooled_permanova.tb, digits = 4)
+
+write_tsv(pooled_permanova.tb, file = file.path(outdir, "beta-pooled-permanova-within-study.tsv"))
+```
+
+## Per-study PERMANOVA
+
+$$
+distance \sim parkinson(Yes/No) \quad \text{(within each study)}
+$$
+
+PERMANOVA does not return a standard error, so per-study R2 cannot be pooled by random effects like the alpha diversities. Per-study p-values are combined with a sample-size-weighted Stouffer test as a summary; the pooled within-study PERMANOVA above remains the primary test.
+
+```{r per-study PERMANOVA, cache=TRUE}
+set.seed(1234)
+per_study_permanova.tb <- lapply(names(beta_metrics), function(metric) {
+  full_dist.mat <- as.matrix(beta_dist.list[[metric]])
+
+  lapply(levels(beta_meta.df$study_name), function(study) {
+    idx <- which(beta_meta.df$study_name == study)
+    study_meta.df <- beta_meta.df[idx, ]
+    study_dist <- as.dist(full_dist.mat[idx, idx])
+
+    vegan::adonis2(
+      study_dist ~ parkinson_for_analysis,
+      data = study_meta.df,
+      by = "margin",
+      permutations = n_perm,
+      parallel = 8
+    ) %>%
+      tidy_adonis() %>%
+      filter(term == "parkinson_for_analysis") %>%
+      transmute(metric = metric, study_name = study,
+                N = length(idx),
+                N_PD = sum(study_meta.df$parkinson_for_analysis == "PD"),
+                N_Control = sum(study_meta.df$parkinson_for_analysis == "Control"),
+                R2, F = statistic, P.Value = p.value)
+  }) %>% bind_rows()
+}) %>%
+  bind_rows() %>%
+  group_by(metric) %>%
+  mutate(P.Value.adj = p.adjust(P.Value, "BH")) %>%
+  ungroup()
+
+# Stouffer combination of one-sided permutation p-values, weights = sqrt(N)
+per_study_stouffer.tb <- per_study_permanova.tb %>%
+  group_by(metric) %>%
+  summarise(
+    n_studies = n(),
+    median_R2 = median(R2),
+    Z = sum(sqrt(N) * qnorm(1 - P.Value)) / sqrt(sum(N)),
+    P.Value.Stouffer = pnorm(Z, lower.tail = FALSE)
+  )
+
+kable(per_study_permanova.tb, digits = 4)
+kable(per_study_stouffer.tb, digits = 4)
+
+write_tsv(per_study_permanova.tb, file = file.path(outdir, "beta-per-study-permanova.tsv"))
+write_tsv(per_study_stouffer.tb, file = file.path(outdir, "beta-per-study-permanova-stouffer.tsv"))
+```
+
+## Homogeneity of dispersions (`betadisper`)
+
+PERMANOVA can be significant because PD and controls differ in spread rather than location. Dispersion is tested within each study (distance of each sample to its own group centroid, PD vs Control). The per-sample distances to centroid are then pooled in a linear model with study as fixed effect, giving one overall dispersion test:
+
+$$
+distance~to~centroid \sim study~name + parkinson(Yes/No)
+$$
+
+```{r betadisper, cache=TRUE}
+set.seed(1234)
+betadisper_runs <- lapply(names(beta_metrics), function(metric) {
+  full_dist.mat <- as.matrix(beta_dist.list[[metric]])
+
+  lapply(levels(beta_meta.df$study_name), function(study) {
+    idx <- which(beta_meta.df$study_name == study)
+    group <- beta_meta.df$parkinson_for_analysis[idx]
+    bd <- vegan::betadisper(as.dist(full_dist.mat[idx, idx]), group = group)
+    bd_test <- vegan::permutest(bd, permutations = n_perm)
+
+    list(
+      summary = tibble(
+        metric = metric, study_name = study,
+        mean_dist_Control = mean(bd$distances[group == "Control"]),
+        mean_dist_PD = mean(bd$distances[group == "PD"]),
+        F = bd_test$tab$F[1],
+        P.Value = bd_test$tab$`Pr(>F)`[1]
+      ),
+      distances = tibble(
+        metric = metric, study_name = study,
+        sample_id = rownames(beta_meta.df)[idx],
+        parkinson_for_analysis = group,
+        dist_to_centroid = bd$distances
+      )
+    )
+  })
+}) %>% unlist(recursive = FALSE)
+
+per_study_betadisper.tb <- map(betadisper_runs, "summary") %>%
+  bind_rows() %>%
+  group_by(metric) %>%
+  mutate(P.Value.adj = p.adjust(P.Value, "BH")) %>%
+  ungroup()
+
+dist_to_centroid.tb <- map(betadisper_runs, "distances") %>% bind_rows()
+
+pooled_betadisper.tb <- dist_to_centroid.tb %>%
+  group_by(metric) %>%
+  group_modify(~ lm(dist_to_centroid ~ study_name + parkinson_for_analysis, data = .x) %>%
+                 broom::tidy() %>%
+                 filter(term == "parkinson_for_analysisPD")) %>%
+  ungroup()
+
+kable(per_study_betadisper.tb, digits = 4)
+kable(pooled_betadisper.tb, digits = 4)
+
+write_tsv(per_study_betadisper.tb, file = file.path(outdir, "beta-per-study-betadisper.tsv"))
+write_tsv(pooled_betadisper.tb, file = file.path(outdir, "beta-pooled-betadisper-lm.tsv"))
+```
+
+## Partial dbRDA (ordination for Figure 1)
+
+$$
+distance \sim parkinson(Yes/No) + Condition(study~name)
+$$
+
+Study is partialled out before ordination; the single constrained axis (dbRDA1) is the direction that best separates PD from controls, and MDS1 is the first residual (unconstrained) axis. Because dbRDA1 is fitted to PD, some separation is expected by construction: read it together with the PERMANOVA R2, not as evidence on its own.
+
+```{r partial dbRDA, cache=TRUE}
+dbrda_scores.tb <- lapply(names(beta_metrics), function(metric) {
+  dbrda_fit <- vegan::dbrda(
+    beta_dist.list[[metric]] ~ parkinson_for_analysis + Condition(study_name),
+    data = beta_meta.df
+  )
+
+  # % of the inertia left after conditioning (positive eigenvalues only)
+  eig <- vegan::eigenvals(dbrda_fit)
+  eig_pos <- eig[eig > 0]
+  prop_explained <- eig_pos / sum(eig_pos)
+
+  vegan::scores(dbrda_fit, display = "sites", choices = 1:2, scaling = "sites") %>%
+    as.data.frame() %>%
+    rownames_to_column("sample_id") %>%
+    set_names(c("sample_id", "Axis1", "Axis2")) %>%
+    mutate(
+      metric = metric,
+      Axis1_name = names(prop_explained)[1],
+      Axis2_name = names(prop_explained)[2],
+      Axis1_prop = prop_explained[1],
+      Axis2_prop = prop_explained[2],
+      .after = sample_id
+    )
+}) %>%
+  bind_rows() %>%
+  left_join(rownames_to_column(beta_meta.df, "sample_id"), by = "sample_id")
+
+dbrda_scores.tb %>%
+  distinct(metric, Axis1_name, Axis1_prop, Axis2_name, Axis2_prop) %>%
+  kable(digits = 4)
+
+write_tsv(dbrda_scores.tb, file = file.path(outdir, "beta-partial-dbRDA-scores.tsv"))
+```
+
+```{r partial dbRDA preview, fig.width=10, fig.height=4.5}
+ggplot(dbrda_scores.tb, aes(x = Axis1, y = Axis2, fill = parkinson_for_analysis)) +
+  geom_point(pch = 21, size = 1.8, stroke = 0.3, alpha = 0.8) +
+  stat_ellipse(aes(color = parkinson_for_analysis), show.legend = FALSE) +
+  scale_color_manual(values = c(PD = "#EBA07EFF", Control = "gray50"), aesthetics = c("color", "fill")) +
+  facet_wrap(~ beta_metrics[metric], scales = "free") +
+  labs(x = "dbRDA1 (PD | study)", y = "MDS1 (residual)", fill = NULL)
 ```
 
 # Session Info
