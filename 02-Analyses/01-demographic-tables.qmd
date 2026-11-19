@@ -93,7 +93,7 @@ table1_availSex <- Input.tse %>%
 Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have at least 30 samples in cases and 30 in controls
+# Each dataset should have more than 10 samples in cases and more than 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
@@ -126,7 +126,7 @@ table1_ok_Parkinson <- Input_parkinson_usableDatasets.tse %>%
   add_overall(last = TRUE) %>% # Add an overall column
   add_p(
     test = list(all_continuous()  ~ "wilcox.test",
-                all_categorical() ~ "chisq.test")
+                all_categorical() ~ "chisq.test"), pvalue_fun = function(p) ifelse(p < 0.001, format.pval(p, digits = 1, scientific = TRUE), sprintf("%.3f", p))
   ) %>%
   bold_p(t = 0.05) %>%
   bold_labels() %>% 
