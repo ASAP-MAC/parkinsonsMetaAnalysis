@@ -24,7 +24,7 @@ Choices for `relative_abundance` data:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "02-PD-meta-analysis", params$biobakery_tool)
+outdir <- file.path("results", "03-PD-meta-analysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -109,6 +109,8 @@ per_dataset_DA_results_maaslin2.tb <- Input_parkinson_usableDatasets.tse %>%
         transform = "LOG",
         max_significance = 0.2,
         fixed_effects = "parkinson_for_analysis",
+        # single exposure to report; P.Value.adj is adjusted (BH) within it
+        coef = "parkinson_for_analysisPD",
         correction = "BH",
         normalization = "NONE",
         min_prevalence = 0,
@@ -119,22 +121,26 @@ per_dataset_DA_results_maaslin2.tb <- Input_parkinson_usableDatasets.tse %>%
         standardize = FALSE
       )
     )
-  }) %>% bind_rows(.id = "study_name") %>% 
-  filter(ExposureValue == "parkinson_for_analysisPD") %>% 
-  # readjust the p-value because we are interested only in one comparison
-  group_by(study_name) %>% 
-  mutate(P.Value.adj = p.adjust(P.Value, "BH")) %>% 
-  ungroup()
+  }) %>% bind_rows(.id = "study_name")
 ```
 
 ## meta-analyze results (`REML`)
 
 ```{r, meta-analysis limma}
-MetaAnalysis_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+MetaAnalysis_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
 ```
 
 ```{r, meta-analysis maaslin2}
-MetaAnalysis_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+MetaAnalysis_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+```
+
+```{r, meta-analysis fit warnings}
+# features whose meta-analysis raised metafor warnings (e.g. non-convergence)
+list(limma = MetaAnalysis_results_limma, maaslin2 = MetaAnalysis_results_maaslin2) %>%
+  lapply(function(x) filter(x$MetaAnalysis, !is.na(Fit.Warning))) %>%
+  bind_rows(.id = "method") %>%
+  select(method, FeatureID, StudiesTested, Fit.Warning) %>%
+  kable()
 ```
 
 ## Results table at a glance {.tabset}
@@ -142,7 +148,7 @@ MetaAnalysis_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maa
 ```{r results table for both method meta-analyses}
 metaAnalysis_glance <- function(MetaAnalysis_results, signif_thr = 0.2, het_signif_thr = 0.1){
   
-  featureName <- colnames(MetaAnalysis_results$MetaAnalysis)[grep("StudiesTested", colnames(MetaAnalysis_results$MetaAnalysis)) - 1]
+  featureName <- "FeatureID"
   
   tot_tested <- MetaAnalysis_results$MetaAnalysis[[featureName]]
   

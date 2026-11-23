@@ -46,19 +46,26 @@ get_res_topN_features <- function(res, topN_feat = 20, P_adj_thr = 0.1) {
 
 #' Generate features columns for pretty plot
 #' 
-#' function that returns a formatted column for plotting by guessing the 
-#' biobakery data type
-#' 
+#' function that returns a formatted column for plotting by guessing the
+#' biobakery data type from the annotation columns (SGB for MetaPhlAn,
+#' description for HUMAnN). Features are keyed by `FeatureID`, as returned by
+#' biobakeryUtils >= 0.10.0 (same IDs as the `Beta_matrix` columns).
+#'
 #' @param meta_df \code{data.frame} of meta-analysis results
 #'
-#' @returns \code{data.frame} with an extra column named "featuresCol"
+#' @returns \code{list} of (1) `meta_df` with an extra column named
+#'   "featuresCol" and (2) a vector translating `FeatureID` to "featuresCol"
 #' @export
 #'
 #' @examples
 prepare_featuresCol <- function(meta_df){
-  
-  featureID <- colnames(meta_df)[grep("StudiesTested", colnames(meta_df)) -1]
-  
+
+  if (!("FeatureID" %in% colnames(meta_df))) {
+    stop("No `FeatureID` column: re-run the 02-Analyses meta-analyses with ",
+         "biobakeryUtils >= 0.10.0.")
+  }
+  featureID <- biobakery_feature_type(meta_df)
+
   if(featureID == "SGB"){
     meta_df <- meta_df %>% 
       # create a features column
@@ -77,9 +84,17 @@ prepare_featuresCol <- function(meta_df){
   
   # assign this vector beyond this function
   featuresCol_transl_vec <- meta_df$featuresCol
-  names(featuresCol_transl_vec) <- meta_df[[featureID]]
-  
+  names(featuresCol_transl_vec) <- meta_df$FeatureID
+
   return(list(meta_df, featuresCol_transl_vec))
+}
+
+# biobakery data type of a results table: "SGB" (MetaPhlAn) or "description" (HUMAnN)
+biobakery_feature_type <- function(meta_df) {
+  if ("SGB" %in% colnames(meta_df)) return("SGB")
+  if ("description" %in% colnames(meta_df)) return("description")
+  stop("Cannot tell the biobakery data type: expected an `SGB` (MetaPhlAn) or ",
+       "`description` (HUMAnN) column.")
 }
 
 # ==========================================================================
@@ -106,10 +121,10 @@ ForestPlot_biobakery <- function(
   )
   
   # attach featuresCol on the topN data frame
-  featureID_col <- colnames(res.list$MetaAnalysis)[
-    grep("StudiesTested", colnames(res.list$MetaAnalysis)) - 1
-  ]
-  
+  featureID_col <- "FeatureID"
+
+  # featuresCol stays raw so it matches the per-study columns below; taxonomy
+  # labels are only prettified on the y axis (see scale_y_discrete)
   topN_df <- topN_df %>%
     mutate(featuresCol = featuresCol_transl_vec[.data[[featureID_col]]])
   
@@ -189,49 +204,19 @@ ForestPlot_biobakery <- function(
       y       = "Feature",
       caption = paste0(
         "Numbered labels = individual study effects (Study 1\u2013", n_studies, ").\n",
-        "Diamond = pooled random-effects estimate. Error bars: 95% CI of pooled Beta",
+        "Diamond = pooled random-effects estimate. Error bars: 95% CI of pooled Beta.\n",
         "Heterogeneity is not considered when making the selection of features to plot")
       ) +
     theme(
-      axis.text.y  = element_text(size = 9),
-      plot.caption = element_text(size = 7, colour = "grey40", hjust = 0)
+      plot.caption = element_text(size = 7, colour = "grey40", hjust = 0),
+      axis.text.y = ggtext::element_markdown(size = 9)
     )
-  
+
+  # taxonomic features: italicise Latin names in the y-axis labels only
+  if (biobakery_feature_type(res.list$MetaAnalysis) == "SGB") {
+    forest_plot <- forest_plot +
+      scale_y_discrete(labels = ChocoPhlAnTaxonomies::enhance_taxonomy_labels)
+  }
+
   return(list(plot = forest_plot, label_ranks = beta_long %>% select(study_rank, study_label) %>% distinct()))
 }
-
-# =============================================================================
-# Not complete, but concept is: from a ggplot y label, return a better looking microbiome label
-# =============================================================================
-
-enrich_y_taxonomy_label <- function(taxFP, taxonomy.df) {
-  genus_piece      <- gsub("g__", "", taxonomy.df$Genus)
-  Vgsub            <- Vectorize(gsub)
-  Species_formatted <- paste(
-    genus_piece,
-    Vgsub(paste0("s__", genus_piece, "_"), "", taxonomy.df$Species, fixed = TRUE)
-  )
-  Species_formatted <- gsub("s__", "", Species_formatted)
-  AltName.chr       <- paste0(Species_formatted, " [", gsub("t__", "", taxonomy.df$SGB), "]")
-  names(AltName.chr) <- taxonomy.df$SGB
-  
-  taxFP +
-    scale_y_discrete(
-      labels = function(y) {
-        AltNameBasic <- AltName.chr[y]
-        AltNameItalics <- strsplit(AltNameBasic, "\\ ") %>%
-          lapply(function(x)
-            ifelse(
-              !("_" %in% x) &
-                str_ends(x, "cter|culum|terium|cter|monas|us|ctor|ella|asma|soma|spira|cola|des|is|aecis|ia|cus|ans|spora|ina|zii|pri"),
-              paste0("*", x, "*"),
-              x
-            )
-          ) %>%
-          purrr::map_chr(.f = function(x) paste(x, collapse = " "))
-        return(AltNameItalics)
-      }
-    ) +
-    theme(axis.text.y.left = element_markdown())
-}
-

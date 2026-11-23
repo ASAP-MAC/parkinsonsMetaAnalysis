@@ -98,8 +98,9 @@ per_dataset_alpha_results_lm.tb <- colData(Input_parkinson_usableDatasets_raref.
       alpha.lm <- lm(as.formula(sprintf("%s ~ parkinson_for_analysis", alpha)), data = x.df)
       broom::tidy(alpha.lm) %>%
         filter(term == "parkinson_for_analysisPD") %>%
-        # column order required by metaAnalyze: grouping, feature ID, N, Beta, SE
-        transmute(alpha_metric = alpha, N = nobs(alpha.lm), Beta = estimate, SE = std.error, t = statistic, P.Value = p.value)
+        # per-study columns named as in biobakeryUtils DA outputs (t_stat, not t),
+        # so that metaAnalyze does not carry them over as feature annotation
+        transmute(alpha_metric = alpha, N = nobs(alpha.lm), Beta = estimate, SE = std.error, t_stat = statistic, P.Value = p.value)
     }) %>%
       bind_rows() %>%
       mutate(P.Value.adj = p.adjust(P.Value, "BH"))
@@ -109,7 +110,7 @@ per_dataset_alpha_results_lm.tb <- colData(Input_parkinson_usableDatasets_raref.
 ## meta-analyze results (`REML`)
 
 ```{r meta-analysis alpha lm}
-MetaAnalysis_results_alpha <- metaAnalyze(res.df = per_dataset_alpha_results_lm.tb, grouping.col = "study_name", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+MetaAnalysis_results_alpha <- metaAnalyze(res.df = per_dataset_alpha_results_lm.tb, grouping.col = "study_name", feature.col = "alpha_metric", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
 
 kable(MetaAnalysis_results_alpha$MetaAnalysis, digits = 3)
 ```
