@@ -3,13 +3,11 @@ title: "PD-Control table 1"
 author: "Giacomo Antonello"
 date: "`r Sys.Date()`"
 format: docx
-params:
-  biobakery_tool: "MetaPhlAn"
 ---
 
 ```{r setup}
 # ------ prepare outdir --------
-outdir <- file.path("results", "01-demographic-tables", params$biobakery_tool)
+outdir <- file.path("results", "01-demographic-tables")
 dir.create(outdir, recursive = TRUE,showWarnings = FALSE)
 # ------------------------------
 library(jsonlite)
@@ -22,7 +20,7 @@ library(tidyverse)
 library(biobakeryUtils)
 library(ChocoPhlAnTaxonomies)
 
-Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", "MetaPhlAn"))
 
 # for the sake of the data representation, switch NA with Unknown
 Input.tse$sex[is.na(Input.tse$sex)] <- "Unknown"

@@ -16,7 +16,7 @@ params:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "05-Constipation-score", params$biobakery_tool)
+outdir <- file.path("results", "06-Constipation-score-and-mediation", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -42,7 +42,7 @@ Input.tse
 
 ```{r prepare constipation score vectors}
 # load constipation DA results
-bluePoo_constipation_results <- read_tsv(file.path("results", "04-Constipation-healthy-metaAnalysis", sprintf("%s/02-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool, params$biobakery_tool))) %>% 
+bluePoo_constipation_results <- read_tsv(file.path("results", "05-Constipation-healthy-metaAnalysis", sprintf("%s/02-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool, params$biobakery_tool))) %>% 
   filter(study_name == "AsnicarF_2021")
 
 bluePoo_score <- bluePoo_constipation_results %>% 
@@ -99,15 +99,15 @@ Input.tse$constipation_score2 <- constipation_score2
 #-----------------------------------------------------
 ```
 
-## Save scores as supplements
+## Save scores in output
 
-```{r}
+```{r save constipation scores}
 constipation_scores <- Input.tse %>% 
   colData() %>% 
   as.data.frame() %>% 
   dplyr::select(uuid, constipation_score1, constipation_score2)
 
-write_tsv(constipation_scores, sprintf("../05-Supplements/Supplementary Tables/constipation_score_%s.tsv", params$biobakery_tool))
+write_tsv(constipation_scores, file.path(outdir, sprintf("constipation_scores_per_sample_%s.tsv", params$biobakery_tool)))
 ```
 
 ## Mediation of Constipation on the PD effects on the Microbiome (on WallenZD_2021)

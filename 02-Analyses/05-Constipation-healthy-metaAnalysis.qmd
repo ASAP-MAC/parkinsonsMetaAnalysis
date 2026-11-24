@@ -16,7 +16,7 @@ params:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "04-Constipation-healthy-metaAnalysis", params$biobakery_tool)
+outdir <- file.path("results", "05-Constipation-healthy-metaAnalysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -104,21 +104,21 @@ per_dataset_DA_results_maaslin2.tb <- Input_constipation_healthy.tse %>%
 ## Fixed effects Meta-analysis 
 
 ```{r, fixed effects meta-analysis limma}
-MetaAnalysis_fixedEff_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "FE", test = "knha")
+MetaAnalysis_fixedEff_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "FE", test = "knha", minStudies.n = 3)
 ```
 
 ```{r, fixed effects meta-analysis maaslin2}
-MetaAnalysis_fixedEff_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "FE", test = "knha")
+MetaAnalysis_fixedEff_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "FE", test = "knha", minStudies.n = 3)
 ```
 
 ## Random effects Meta-analysis 
 
 ```{r, random effects meta-analysis limma}
-MetaAnalysis_randEff_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+MetaAnalysis_randEff_results_limma <- metaAnalyze(res.df = per_dataset_DA_results_limma.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha", minStudies.n = 3)
 ```
 
 ```{r, random effects meta-analysis maaslin2}
-MetaAnalysis_randEff_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha")
+MetaAnalysis_randEff_results_maaslin2 <- metaAnalyze(res.df = per_dataset_DA_results_maaslin2.tb, grouping.col = "study_name", feature.col = "FeatureID", beta.col = "Beta", se.col = "SE", method = "REML", test = "knha", minStudies.n = 3)
 ```
 
 # Write all tables

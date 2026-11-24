@@ -9,8 +9,11 @@ format:
     toc-depth: 2
 editor: source
 params:
+  # "MetaPhlAn" or "HUMAnN"
   biobakery_tool: "MetaPhlAn"
-  assay_to_test: "relative_abundance"
+  # "relative_abundance": the relative_abundance assay as is
+  # "voom": limma::voom log2-CPM of the counts assay, as in 03-PD-metaAnalysis
+  transform: "relative_abundance"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
@@ -25,10 +28,19 @@ We will record the number of samples in each training set and the AUC obtained
 with that test set.
 
 ```{r setup, message=FALSE, warning=FALSE}
+# check parameters
+stopifnot(
+  params$biobakery_tool %in% c("MetaPhlAn", "HUMAnN"),
+  params$transform %in% c("relative_abundance", "voom")
+)
 
-# create base directory output
-outdir <- file.path("results", "03-RF-LODO-PD-vs-Control", params$biobakery_tool, "sample-size-gradient")
+# create base directory output, e.g. results/04-RF-LODO-PD-vs-Control/MetaPhlAn-voom
+outdir <- file.path("results", "04-RF-LODO-PD-vs-Control", sprintf("%s-%s", params$biobakery_tool, params$transform))
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+# voom_transform(): limma::voom()$E without fitting a model
+# (equivalence proven in 05-Supplements/voom-replication-RF-vs-metaAnalysis.qmd)
+source("../utils/voom_transform.R")
 
 library(knitr)
 opts_chunk$set(
@@ -54,6 +66,9 @@ library(biobakeryUtils)
 library(ggpubr) 
 theme_set(theme_pubr())
 
+# set seed
+myseed <- 1234
+set.seed(myseed)
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 ```
 
@@ -65,17 +80,23 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have more than 10 samples in cases and more than 10 in controls
-ok_datasets <- Input_parkinson.tse@colData %>% 
-  as.data.frame() %>% 
-  group_by(study_name) %>% 
+# Each dataset should have at least 10 samples in cases and 10 in controls
+# (same rule as 03-PD-metaAnalysis.qmd)
+ok_datasets <- Input_parkinson.tse@colData %>%
+  as.data.frame() %>%
+  group_by(study_name) %>%
   filter(
-    sum(parkinson_for_analysis == "Control") > 10,
-    sum(parkinson_for_analysis == "PD") > 10
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
   )
 
-## filter TSE to restrict to 'ok' datasets 
+## filter TSE to restrict to 'ok' datasets
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+# keep features detected in at least one usable dataset: the union of the
+# features tested per dataset in 03-PD-metaAnalysis.qmd. Dropped features are
+# all-zero in these samples, so library sizes (and voom values) are unchanged
+Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse, "counts")) > 0, ]
 
 # ## Prevalence and detection filter
 # Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
@@ -104,21 +125,42 @@ SIAMCAT has it, and it is likely what is taking so long to complete.
 ```{r rf classification with ranger}
 plan(multisession, workers = 10)
 
-feat_matrix <- assay(Input_parkinson_usableDatasets.tse, params$assay_to_test)
+# features: relative abundances as they are, or limma::voom log2-CPM of the counts
+feat_matrix <- switch(
+  params$transform,
+  relative_abundance = assay(Input_parkinson_usableDatasets.tse, "relative_abundance"),
+  voom = voom_transform(assay(Input_parkinson_usableDatasets.tse, "counts"))
+)
 metadata    <- as.data.frame(colData(Input_parkinson_usableDatasets.tse))
 datasets    <- unique(metadata$study_name)
 
 t0_ranger <- Sys.time()
 
+# progress log: one line per test dataset, follow it with `tail -f <outdir>/progress.log`
+progress_log <- file.path(outdir, "progress.log")
+log_line <- function(...) {
+  cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " | ", ..., "\n", sep = "", file = progress_log, append = TRUE)
+}
+cat("", file = progress_log) # start a fresh log
+log_line(sprintf("start: %s, %s, %d test datasets, %d workers",
+                 params$biobakery_tool, params$transform, length(datasets), nbrOfWorkers()))
+
 trained_models_ranger.list <- sapply(datasets, function(ds) {
-    
+
     #training datasets
     training_datasets <- setdiff(datasets, ds)
-    
-    training_datasets_seq_combn <- lapply(seq_along(training_datasets), function(i) combn(training_datasets, i, simplify = FALSE)) %>% 
+
+    training_datasets_seq_combn <- lapply(seq_along(training_datasets), function(i) combn(training_datasets, i, simplify = FALSE)) %>%
       unlist(recursive = FALSE)
-    
-    rf_results <- future_map(training_datasets_seq_combn, function(dss) {
+
+    t_ds <- Sys.time()
+    log_line(sprintf("test dataset %d/%d %s: fitting %d models",
+                     match(ds, datasets), length(datasets), ds, length(training_datasets_seq_combn)))
+
+    # scheduling = Inf: one task per training set, so idle workers pick up
+    # remaining models instead of waiting on a few large pre-assigned chunks.
+    # Results are unchanged: each fit uses its own `seed` and a single thread.
+    rf_results <- future_map(training_datasets_seq_combn, .options = furrr_options(scheduling = Inf), function(dss) {
       # prepare data for training
     train_idx      <- metadata$study_name %in% dss
     train_features <- t(feat_matrix[, train_idx])
@@ -131,8 +173,8 @@ trained_models_ranger.list <- sapply(datasets, function(ds) {
       num.trees   = 2000,
       mtry        = 10,
       probability = TRUE,
-      num.threads = 6,
-      seed        = 1234
+      num.threads = 1,
+      seed        = myseed
     )
     
     # create test sets
@@ -164,44 +206,28 @@ trained_models_ranger.list <- sapply(datasets, function(ds) {
       AUROC_upperCI = as.double(ci_obj[3]))
       )
     }) %>% bind_rows()
-    }, 
+
+    log_line(sprintf("test dataset %d/%d %s: done in %.1f min",
+                     match(ds, datasets), length(datasets), ds,
+                     as.numeric(difftime(Sys.time(), t_ds, units = "mins"))))
+
+    return(rf_results)
+    },
     simplify = FALSE, USE.NAMES = TRUE
     )
 
-trained_models_ranger.df <- trained_models_ranger.list %>% 
+trained_models_ranger.df <- trained_models_ranger.list %>%
   bind_rows(.id = "testDataset")
 
 t1_ranger <- Sys.time()
+log_line(sprintf("finished in %.1f min", as.numeric(difftime(t1_ranger, t0_ranger, units = "mins"))))
 
 t1_ranger - t0_ranger
 ```
 
 ```{r save ranger results}
 # save all polished results
-write_tsv(trained_models_ranger.df, file.path(outdir, sprintf("sample_size_gradient_res_%s_%s.tsv", "ranger", params$assay_to_test)))
-```
-
-```{r create plot results, warning=FALSE, message=FALSE}
-sample_gradient.gg <- trained_models_ranger.df %>% 
-  ggplot(aes(x = nTrainingSamples, y = AUROC, color = factor(nTrainingDatasets), key = trainingDatasets)) + 
-  geom_point() + 
-  facet_wrap(~testDataset) + 
-  scale_color_viridis_d(direction = -1)
-
-sample_gradient.gg
-```
-
-```{r}
-plotly::ggplotly(sample_gradient.gg)
-```
-
-
-```{r save plot results}
-# svg
-ggsave(plot = sample_gradient.gg, filename = file.path(outdir, sprintf("sample_size_gradient_%s_%s.svg", "ranger", params$assay_to_test)), width = 9, height = 9)
-
-# png
-ggsave(plot = sample_gradient.gg, filename = file.path(outdir, sprintf("sample_size_gradient_%s_%s.png", "ranger", params$assay_to_test)), width = 9, height = 9)
+write_tsv(trained_models_ranger.df, file.path(outdir, sprintf("sample_size_gradient_res_%s_%s.tsv", "ranger", params$transform)))
 ```
 
 # Session Info
