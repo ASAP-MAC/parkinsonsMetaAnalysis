@@ -1,5 +1,5 @@
 ---
-title: "Figure 3 - Constipation"
+title: "Figure 4 - Constipation"
 author: "Giacomo Antonello"
 date: "`r Sys.Date()`"
 format: 
@@ -9,7 +9,7 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_tool: "HUMAnN"
+  biobakery_tool: "MetaPhlAn"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
@@ -33,8 +33,11 @@ palette_constipation <- c(Fast = "#CFB267FF", Normal = "gray70", Slow = "#5480B5
 # load full data
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
-# initialize path where to retrieve and write results
+# initialize path where to read results from
 results_dir <- file.path("..", "02-Analyses", "results")
+
+# initialize path where to save plots
+outdir <- file.path("results", "Figure-4-Constipation")
 ```
  
 ```{r read and incorporate constipation score}
@@ -67,7 +70,7 @@ asnicar_data_for_plot <- full_metadata.df %>%
 
 ```{r asnicar scatterplot of scores}
 asnicar_validation_scatterplot_scores.gg <- asnicar_data_for_plot %>% 
-  ggplot(aes(x = constipation_score1, constipation_score2)) + 
+  ggplot(aes(x = constipation_score1, y = constipation_score2)) + 
   geom_point(pch = 21, fill = "gray70", color = "black") + 
   geom_smooth(method = "lm", formula = "y~x", mapping = aes(group = 1), show.legend = FALSE, color = "black") + 
   stat_cor(method = "pearson", mapping = aes(group = 1), show.legend = FALSE) + 
@@ -93,11 +96,21 @@ pairwise_auc <- function(data, group_var, value_var) {
       direction = "<",   # enforce P(score | pair[2]) > P(score | pair[1]); flip if you want the opposite convention
       quiet     = TRUE
     )
-    data.frame(group1 = pair[1], group2 = pair[2], AUC = as.numeric(pROC::auc(roc_obj)))
+    ci_obj <- print(pROC::ci.auc(roc_obj, method = "delong"))
+    
+    data.frame(
+      group1 = pair[1],
+      group2 = pair[2],
+      AUC = as.numeric(pROC::auc(roc_obj)),
+      AUC.L = as.double(ci_obj[1]),
+      AUC.R = as.double(ci_obj[3])
+      )
   }, simplify = FALSE) %>% bind_rows()
 }
 
-# calculate asnicar significance levels with rstatix for plotting
+# calculate asnicar significance levels with rstatix for automatic calculation 
+# of x and y positions
+
 asnicar_signif <- asnicar_data_for_plot %>% 
   pairwise_wilcox_test(formula = constipation_score1 ~ constipation_for_analysis) %>% 
   add_xy_position()
@@ -112,7 +125,7 @@ asnicar_signif_auc <- asnicar_signif %>%
 # make plot with AUC instead of Wilcoxon p-values
 asnicar_validation_boxplots_score1.gg <- asnicar_data_for_plot %>%
   ggplot(
-    aes(x = Bristol_score_curated_ga, color = constipation_for_analysis, y = constipation_score1)
+    aes(x = constipation_for_analysis, color = constipation_for_analysis, y = constipation_score1)
   ) +
   ggbeeswarm::geom_beeswarm(
     cex = 1.5,
@@ -137,10 +150,14 @@ asnicar_validation_boxplots_score1.gg <- asnicar_data_for_plot %>%
     x = "Transit Time Group",
     y = "Constipation Score",
     color = "Transit Time Group"
+  ) + 
+  theme(
+    legend.position = "top"
   )
 
-asnicar_validation_boxplots_score1.gg
-
+ggsave(plot = asnicar_validation_boxplots_score1.gg, file = file.path(outdir, "asnicar_constipation_score.svg"), height = 6, width = 5.5)
+saveRDS(asnicar_validation_boxplots_score1.gg, file = file.path(outdir, "asnicar_constipation_score.rds"))
+write_tsv(asnicar_signif_auc, file = file.path(outdir, "asnicar_constipation_score_signif_for_plot.tsv"))
 ```
 
 ```{r, panel of 4 test datasets}
@@ -231,8 +248,11 @@ score2_panel.gg
 ```{r}
 results_clean <- read_tsv(file.path(results_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
 
-wallen_PD_Control_DA <- read_tsv(file.path(results_dir, "02-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
-  filter(study_name == "WallenZD_2022")
+wallen_PD_Control_DA <- read_tsv(file.path(results_dir, "03-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
+  filter(study_name == "WallenZD_2022") %>% 
+  # B_stat is limma-only (all NA for Maaslin2): drop it so complete.cases() below
+  # does not discard every row
+  select(-any_of("B_stat"))
 # naming exception that I couldn't harmonize upstream yet
 if(tested_unit == "pathway"){
   wallen_PD_Control_DA$pathway <- wallen_PD_Control_DA$metacyc_code_safename
@@ -319,7 +339,7 @@ Figure_3_panel <- ggarrange(top_piece, bottom_piece, nrow = 2, heights = c(1, 0.
 
 Figure_3_panel
 
-ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure3-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
+ggsave(plot = Figure_3_panel, filename = file.path(outdir, sprintf("Figure3-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
 ```
 
 # Session info

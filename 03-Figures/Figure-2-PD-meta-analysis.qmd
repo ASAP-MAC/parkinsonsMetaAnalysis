@@ -12,42 +12,48 @@ params:
  overwrite_TSE_out: "yes"
 ---
 
-```{r}
+```{r setup}
 library(tidyverse)
 library(openxlsx2)
 library(knitr)
 library(ggpubr)
+library(patchwork)
+library(ggtext) # this is for the forest plot helper function
 theme_set(theme_bw())
 set.seed(1234)
+
+# Create output directory
+outdir <- file.path("results", "Figure-2-PD-metaAnalysis")
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 #------------------------------
-# some parameters
+# default parameters for filtering results to be plotted
 P_adj_thr <- 0.2
 topN_feat <- 20
+facetCol <- "facetCol"
 #---------------------------
 source("../utils/mbForestPlot.R")
+```
 
-MetaPhlAn_maslin2_results_path <- sprintf("../02-Analyses/results/02-PD-meta-analysis/MetaPhlAn/02-MetaPhlAn_MetaAnalysis_results_maaslin2.xlsx")
-res <- read_xlsx(MetaPhlAn_maslin2_results_path, sheet = "MetaAnalysis")
-
+```{r MetaPhlAn forest plot}
+# load all sheets of the results
+MetaPhlAn_maslin2_results_path <- "../02-Analyses/results/03-PD-meta-analysis/MetaPhlAn/02-MetaPhlAn_MetaAnalysis_results_maaslin2.xlsx"
 tmp_wb <- wb_load(MetaPhlAn_maslin2_results_path)
 MetaPhlAn_results.list <- sapply(tmp_wb$sheet_names, function(sheet) wb_to_df(tmp_wb, sheet), simplify = FALSE)
 
-# Change function behavior: 
-# - from path to results list
-# - make sure topN function works
-# - allow decreasing and increasing order
-forest_plot_MetaPhlAn <- ForestPlot_biobakery(MetaPhlAn_results.list,P_adj_thr = P_adj_thr, topN_feat = topN_feat)
+# in the meta-analysis results, create a faceting variable
+MetaPhlAn_results.list$MetaAnalysis$facetCol <- ifelse(MetaPhlAn_results.list$MetaAnalysis$Beta.pool > 0, "Higer in PD", "Higher in Control")
+forest_plot_MetaPhlAn <- ForestPlot_biobakery(res.list = MetaPhlAn_results.list, P_adj_thr = P_adj_thr, topN_feat = topN_feat, decreasing = TRUE)
 
-kable(forest_plot_MetaPhlAn$label_ranks) %>% kableExtra::kable_styling(full_width = FALSE)
+# kable(forest_plot_MetaPhlAn$label_ranks) %>% kableExtra::kable_styling(full_width = FALSE)
 forest_plot_MetaPhlAn$plot
 ```
 
-```{r}
+```{r MetaPhlAn heterogeneity plot}
 tmp <- MetaPhlAn_results.list$MetaAnalysis %>%
   filter(P.Value.adj < P_adj_thr) %>%
   prepare_featuresCol()
 
-meta_df                <- tmp[[1]]
+meta_df <- tmp[[1]]
 featuresCol_transl_vec <- tmp[[2]]
 
 # get top N results — now correctly uses its own `res` arg
@@ -58,7 +64,7 @@ topN_df <- get_res_topN_features(
 )
 
 # attach featuresCol on the topN data frame
-featureID_col <- colnames(MetaPhlAn_results.list$MetaAnalysis)[grep("StudiesTested", colnames(MetaPhlAn_results.list$MetaAnalysis)) - 1]
+featureID_col <- "FeatureID"
 
 topN_df <- topN_df %>%
   mutate(featuresCol = featuresCol_transl_vec[.data[[featureID_col]]])
@@ -82,31 +88,29 @@ Forest_and_het_panel <- ggarrange(
   align = "h"
 )
 
-ggsave(plot = Forest_and_het_panel, filename = file.path("results", "01-forestPlot-MetaPhlAn.svg"), height = 8, width = 10)
+ggsave(plot = Forest_and_het_panel, filename = file.path(outdir, "01-forest-het-plots-MetaPhlAn.svg"), height = 8, width = 10)
 ```
 
-```{r}
-HUMAnN_maslin2_results_path <- sprintf("../02-Analyses/results/02-PD-meta-analysis/HUMAnN/02-HUMAnN_MetaAnalysis_results_maaslin2.xlsx")
-res <- read_xlsx(HUMAnN_maslin2_results_path, sheet = "MetaAnalysis")
-
+```{r HUMAnN forest plot}
+# load all sheets of the results
+HUMAnN_maslin2_results_path <- "../02-Analyses/results/03-PD-meta-analysis/HUMAnN/02-HUMAnN_MetaAnalysis_results_maaslin2.xlsx"
 tmp_wb <- wb_load(HUMAnN_maslin2_results_path)
 HUMAnN_results.list <- sapply(tmp_wb$sheet_names, function(sheet) wb_to_df(tmp_wb, sheet), simplify = FALSE)
 
-# Change function behavior: 
-# - from path to results list
-# - make sure topN function works
-# - allow decreasing and increasing order
-forest_plot_HUMAnN <- ForestPlot_biobakery(HUMAnN_results.list, topN_feat = 20,P_adj_thr = 0.1, decreasing = TRUE)
+# in the meta-analysis results, create a faceting variable
+HUMAnN_results.list$MetaAnalysis$facetCol <- ifelse(HUMAnN_results.list$MetaAnalysis$Beta.pool > 0, "Higer in PD", "Higher in Control")
+forest_plot_HUMAnN <- ForestPlot_biobakery(res.list = HUMAnN_results.list, P_adj_thr = P_adj_thr, topN_feat = topN_feat, decreasing = TRUE)
 
-kable(forest_plot_HUMAnN$label_ranks) %>% kableExtra::kable_styling(full_width = FALSE)
+# kable(forest_plot_HUMAnN$label_ranks) %>% kableExtra::kable_styling(full_width = FALSE)
+forest_plot_HUMAnN$plot
 ```
 
-```{r}
+```{r HUMAnN heterogeneity plot}
 tmp <- HUMAnN_results.list$MetaAnalysis %>%
   filter(P.Value.adj < P_adj_thr) %>%
   prepare_featuresCol()
 
-meta_df                <- tmp[[1]]
+meta_df <- tmp[[1]]
 featuresCol_transl_vec <- tmp[[2]]
 
 # get top N results — now correctly uses its own `res` arg
@@ -117,7 +121,7 @@ topN_df <- get_res_topN_features(
 )
 
 # attach featuresCol on the topN data frame
-featureID_col <- colnames(HUMAnN_results.list$MetaAnalysis)[grep("StudiesTested", colnames(HUMAnN_results.list$MetaAnalysis)) - 1]
+featureID_col <- "FeatureID"
 
 topN_df <- topN_df %>%
   mutate(featuresCol = featuresCol_transl_vec[.data[[featureID_col]]])
@@ -141,15 +145,12 @@ Forest_and_het_panel <- ggarrange(
   align = "h"
 )
 
-ggsave(plot = Forest_and_het_panel, filename = file.path("results", "02-forestPlot-HUMAnN.svg"), height = 8, width = 10)
+ggsave(plot = Forest_and_het_panel, filename = file.path(outdir, "02-forest-het-plots-HUMAnN.svg"), height = 8, width = 10)
 ```
-
-QianY (8) and Bedarf (1) pathway associations are generally outliers, as they 
-are rather strong and in the opposite direction as the meta
 
 # Figure 2 panel
 
-```{r prepare single panels}
+```{r figure 2 prepare panels}
 
 panelA <- forest_plot_MetaPhlAn$plot + labs(caption = NULL, y = NULL)
 
@@ -214,15 +215,13 @@ study_labels_horizontal <- forest_plot_HUMAnN$label_ranks %>%
 legend_row <- ggplot() + theme_void() +
   inset_element(
     study_labels_horizontal,
-    left = 0.4, right = 0.85,   # symmetric margins -> horizontally centered
-    bottom = -0.3, top = 0.7,     # occupies the lower 70% -> sits toward the bottom
+    left = 0.4, right = 0.85,   # symmetric margins, horizontally centered
+    bottom = -0.3, top = 0.7,     # occupies the lower 70%, sits toward the bottom
     align_to = "full"
   )
 ```
 
-```{r build panels}
-library(patchwork)
-
+```{r figure 2 build figure}
 panelABCD <- wrap_plots(panelA, panelB, panelC, panelD, ncol = 2) + 
   plot_layout(
     widths = c(1, 0.3),
@@ -246,7 +245,7 @@ Figure1 <- wrap_plots(
 ) +
   plot_layout(heights = c(0.2, 1))
 
-ggsave(plot = Figure1, filename = file.path("results", "Figure2-PD-meta-analysis.svg"), height = 10, width = 10)
+ggsave(plot = Figure1, filename = file.path(outdir, "03-Figure-2-PD-meta-analysis.svg"), height = 10, width = 10)
 ```
 
 # Session Info

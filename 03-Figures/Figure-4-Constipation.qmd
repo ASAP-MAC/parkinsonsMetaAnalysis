@@ -9,7 +9,8 @@ format:
     toc-depth: 2
 editor: source
 params:
-  biobakery_tool: "HUMAnN"
+  outdir: "results/Figure-3-PD-Constipation"
+  biobakery_tool: "MetaPhlAn"
   preval_thresh: 0.05
   detect_thresh: 1e-5
 ---
@@ -24,17 +25,20 @@ library(rstatix)
 # set a ggplot2 overall theme
 theme_set(theme_bw())
 
+# create output directory for the figure
+dir.create(params$outdir, recursive = TRUE, showWarnings = TRUE)
+
 # infer the tested unit from the biobakery tool
 tested_unit <- ifelse(params$biobakery_tool == "MetaPhlAn", "SGB", "pathway")
 
 # initialize palettes
-palette_constipation <- c(Fast = "#CFB267FF", Normal = "gray70", Slow = "#5480B5FF")
+palette_constipation <- c(Fast = "#B7E3CC", Normal = "gray40", Slow = "#5678B6")
 
 # load full data
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
 # initialize path where to retrieve and write results
-results_dir <- file.path("..", "02-Analyses", "results")
+results_input_dir <- file.path("..", "02-Analyses", "results")
 ```
  
 ```{r read and incorporate constipation score}
@@ -45,15 +49,40 @@ full_metadata.df <- as.data.frame(colData(Input.tse)) %>%
   dplyr::left_join(constipation_scores, by = "uuid")
 ```
 
-# Figure 3 - Constipation figure (MetaPhlAn)
-
-## Panel A - AUC constipation score in Asnicar
+# Figure 4 - Constipation figure (MetaPhlAn)
 
 ```{r prepare asnicar data for plot}
+
+source("https://raw.githubusercontent.com/g-antonello/gautils/refs/heads/main/R/add_N_to_catVar.R")
+
 asnicar_data_for_plot <- full_metadata.df %>% 
   filter(study_name == "AsnicarF_2021") %>% 
-  mutate(constipation_for_analysis = relevel(constipation_for_analysis, "Fast"))
+  mutate(constipation_for_analysis = relevel(constipation_for_analysis, "Fast"), 
+         transit_time_cut_classes_definition = factor(transit_time_cut_classes_definition, levels = names(palette_constipation)) %>% add_N_to_catVar())
 ```
+
+## Panel A - histogram of transit time for method graphic
+
+```{r}
+transit_time_histogram.gg <- ggplot(asnicar_data_for_plot, aes(x = transit_time_cut_classes_definition, y = transit_time_hours, fill = transit_time_cut_classes_definition)) + 
+  geom_violin(alpha = 0.85) + 
+  scale_fill_manual(values = unname(palette_constipation)) + 
+  labs(fill = NULL, x = "Gut transit time (categorized)", y = "Gut transit time (hours)") + 
+  theme(
+    legend.position = "inside", 
+    legend.position.inside = c(0.18, 0.88), 
+    legend.box.background = element_rect(fill = "white", color = "black")
+    )
+
+# save svg plot
+ggsave(plot = transit_time_histogram.gg, filename = file.path(params$outdir, "panelA-BluePoo-transit-time-histogram.svg"), height = 5, width = 5)
+# save rds plot
+saveRDS(transit_time_histogram.gg, file = file.path(params$outdir, "panelA-BluePoo-transit-time-histogram.rds"))
+
+transit_time_histogram.gg
+```
+
+## Panel B - AUC constipation score in Asnicar
 
 ```{r asnicar scatterplot of scores}
 asnicar_validation_scatterplot_scores.gg <- asnicar_data_for_plot %>% 
@@ -156,6 +185,14 @@ plots_gg.list <- sapply(unique(full_metadata_constipation.df$study_name), functi
               response = constipation_for_analysis,
               predictor = !!sym(paste0("constipation_score", i)), levels = c("Normal", "Slow")
             )$auc),
+          AUC.L = as.double(pROC::ci.auc(pROC::roc(
+              response = constipation_for_analysis,
+              predictor = !!sym(paste0("constipation_score", i)), levels = c("Normal", "Slow")
+            )))[1],
+          AUC.R = as.double(pROC::ci.auc(pROC::roc(
+              response = constipation_for_analysis,
+              predictor = !!sym(paste0("constipation_score", i)), levels = c("Normal", "Slow")
+            )))[3],
           y = max(!!sym(paste0(
             "constipation_score", i
           ))),
@@ -163,7 +200,7 @@ plots_gg.list <- sapply(unique(full_metadata_constipation.df$study_name), functi
         )
       
       # plot
-      ggplot(
+     plot <- ggplot(
         data,
         aes(
           x = parkinson_for_analysis,
@@ -197,12 +234,15 @@ plots_gg.list <- sapply(unique(full_metadata_constipation.df$study_name), functi
           color = "Constipation",
           title = ds,
           subtitle = paste("score", i)
-        ) %>%
-        return()
-    })
+        )
+    
+     return(list(plot = plot, stats = stats))
+     
+    }) %>% set_names(paste("constipation_score", 1:2, sep = "_"))
     
     return(plot_scores.list)
-  }, USE.NAMES = TRUE, simplify = FALSE) %>% suppressMessages()
+  }, USE.NAMES = TRUE, simplify = FALSE) %>% 
+  suppressMessages()
   
 ```
 
@@ -219,10 +259,13 @@ score2_panel.gg
 ## Panel B - Mediation scatterplot
 
 ```{r}
-results_clean <- read_tsv(file.path(results_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
+results_clean <- read_tsv(file.path(results_input_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
 
-wallen_PD_Control_DA <- read_tsv(file.path(results_dir, "02-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
-  filter(study_name == "WallenZD_2022")
+wallen_PD_Control_DA <- read_tsv(file.path(results_input_dir, "03-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
+  filter(study_name == "WallenZD_2022") %>% 
+  # B_stat is limma-only (all NA for Maaslin2): drop it so complete.cases() below
+  # does not discard every row
+  select(-any_of("B_stat"))
 # naming exception that I couldn't harmonize upstream yet
 if(tested_unit == "pathway"){
   wallen_PD_Control_DA$pathway <- wallen_PD_Control_DA$metacyc_code_safename
@@ -287,8 +330,10 @@ prop_mediated_histogram
 ```{r}
 
 # constipation score
-top_piece <- ggarrange( 
-  # asnicar validation boxplot
+top_piece <- ggarrange(
+  # Asnicar transit time distribution
+  transit_time_histogram.gg,
+  # Asnicar validation boxplot
   asnicar_validation_boxplots_score1.gg,
   # BoktorJC validation boxplot
   plots_gg.list$BoktorJC_2023[[1]] + 
@@ -299,7 +344,7 @@ top_piece <- ggarrange(
               theme(legend.position = "none") + 
               labs(title = NULL, subtitle = "WallenZD_2022"),
   # final panel setup
-  common.legend = TRUE, nrow = 1, align = "h", labels = letters[1:3])
+  common.legend = TRUE, nrow = 1, align = "h", labels = letters[1:3], widths = c(1, 0.3, 0.3, 0.3))
 
 # bottom piece, mediation
 bottom_piece <- ggarrange(mediation_vs_DA_beta_scatter,prop_mediated_histogram, common.legend = TRUE, labels = letters[4:5])
@@ -309,7 +354,7 @@ Figure_3_panel <- ggarrange(top_piece, bottom_piece, nrow = 2, heights = c(1, 0.
 
 Figure_3_panel
 
-ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure3-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
+ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure4-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
 ```
 
 # Session info
@@ -317,3 +362,4 @@ ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure3-C
 ```{r session info}
 sessionInfo()
 ```
+1

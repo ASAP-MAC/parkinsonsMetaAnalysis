@@ -15,14 +15,19 @@ params:
 
 ```{r setup}
 library(tidyverse)
-res_base_dir <- file.path("..", "02-Analyses", "results", "03-RF-LODO-PD-vs-Control", params$biobakery_tool)
+res_base_dir <- file.path("..", "02-Analyses", "results", "04-RF-LODO-PD-vs-Control", paste0(params$biobakery_tool, "-", "relative_abundance"))
+
+# create figure output directory
+outdir <- file.path("results", "Figure-3-RandomForest")
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
 theme_set(theme_bw())
 ```
 
 # AUROC vs N. Samples
 
 ```{r load rf gradient results}
-rf_predictions_gradients <- read_tsv(file.path(res_base_dir, "sample-size-gradient", "sample_size_gradient_res_ranger_relative_abundance.tsv")) %>% 
+rf_predictions_gradients <- read_tsv(file.path(res_base_dir, "sample_size_gradient_res_ranger_relative_abundance.tsv")) %>% 
   mutate(wallen_in_training = grepl("Wallen", trainingDatasets))
 ```
 
@@ -42,32 +47,25 @@ sample_gradient.gg <- ggplot() +
     color = "Number of training datasets"
   )
 
+ggsave(plot = sample_gradient.gg, filename = file.path(outdir, "01-rf-with-sample-gradients-color-N-train-datasets-x-nSamples.svg"), height = 8, width = 8)
 sample_gradient.gg
 ```
 
 ## No color
 
 ```{r}
-auroc_vs_nSamples.gg <- ggplot() +
-  geom_point(
-    data = rf_predictions_gradients,
-    mapping = aes(x = nTrainingSamples, y = AUROC
-                  # color = wallen_in_training
-                  )
-  ) + 
-  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
-  geom_point(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
-  geom_label(data = rf_predictions_gradients %>% filter(nTrainingSamples == 8), mapping = aes(x = nTrainingSamples - 100, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
+sample_gradient_no_color.gg <- ggplot() + 
+  geom_point(data = rf_predictions_gradients, mapping = aes(x = nTrainingSamples, y = AUROC)) + 
+  geom_errorbar(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC, ymin = AUROC_lowerCI , ymax = AUROC_upperCI), color = "red2") + 
+  geom_point(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = AUROC), color = "red2", size = 2) + 
+  geom_label(data = rf_predictions_gradients %>% filter(nTrainingDatasets == 8), mapping = aes(x = nTrainingSamples, y = 0.5, label = sprintf("%.3f", AUROC)), color = "red2") + 
   facet_wrap(~testDataset) + 
-  # scale_color_manual(values = c("TRUE" = "black", "FALSE" = "gray80")) +
-  theme(legend.position = "top", axis.text.x = element_text(hjust = 1, angle = 60)) +
-  
+  theme(legend.position = "top") +
   labs(
-    x = "Number of samples in the training set", 
-    color = "WallenZD_2022 in Training Set"
+    x = "Number of samples in the training set"
   )
 
-ggsave(plot = auroc_vs_nSamples.gg, filename = file.path("results", "03-rf-with-sample-gradients-x-nSamples.svg"), height = 8, width = 8)
+ggsave(plot = sample_gradient_no_color.gg, filename = file.path(outdir, "02-rf-with-sample-gradients-no-color-x-nSamples.svg"), height = 8, width = 8)
 ```
 
 # AUROC vs N. Datasets
@@ -115,7 +113,7 @@ auroc_vs_nDatasets.gg <- ggplot() +
   facet_wrap(~ testDataset) +
   labs(x = "Number of datasets in the training set")
 
-ggsave(plot = auroc_vs_nDatasets.gg, filename = file.path("results", "03-rf-with-sample-gradients-x-nDatasets.svg"), height = 8, width = 8)
+ggsave(plot = auroc_vs_nDatasets.gg, filename = file.path(outdir, "03-rf-with-sample-gradients-x-nDatasets.svg"), height = 8, width = 8)
 ```
 
 # Session Info

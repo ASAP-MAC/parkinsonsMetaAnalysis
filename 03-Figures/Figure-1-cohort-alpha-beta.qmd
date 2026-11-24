@@ -99,7 +99,7 @@ plotting_levels <- c("MetaAnalysis", "WallenZD_2022", "QianY_2020", "NishiwakiH_
 "MaoL_2021", "JoS_2022", "DuruIC_2024", "BoktorJC_2023.2", "BoktorJC_2023", 
 "BedarfJR_2017")
 
-data_for_alpha_forest_plot.df <- read_tsv("../02-Analyses/results/02-alphaDiv-meta-analysis/MetaPhlAn/alpha-meta-data-for-plot.tsv") %>% 
+data_for_alpha_forest_plot.df <- read_tsv("../02-Analyses/results/02-alpha_beta_diversity/MetaPhlAn/alpha-meta-data-for-plot.tsv") %>% 
   mutate(study_name = factor(study_name, levels = plotting_levels),
          # a quick binary variable to make the plot prettier
          is_meta = study_name == "MetaAnalysis",
@@ -137,7 +137,7 @@ alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Bet
 Scores computed in `02-Analyses/02-alpha_beta_diversity.qmd`. dbRDA1 is the PD-constrained axis after removing the study effect; MDS1 is the first residual axis. The pooled within-study PERMANOVA R2 for PD is shown as subtitle.
 
 ```{r dbRDA plot}
-beta_results_dir <- file.path("../02-Analyses/results/02-alphaDiv-meta-analysis", params$biobakery_tool)
+beta_results_dir <- file.path("../02-Analyses/results/02-alpha_beta_diversity/", params$biobakery_tool)
 
 dbrda_bray.df <- read_tsv(file.path(beta_results_dir, "beta-partial-dbRDA-scores.tsv")) %>%
   filter(metric == "bray")
