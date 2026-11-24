@@ -1,0 +1,213 @@
+---
+title: "voom replication: random forest inputs vs PD meta-analysis"
+author: "Giacomo Antonello"
+date: "`r Sys.Date()`"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+editor: source
+params:
+  biobakery_tool: "MetaPhlAn"
+---
+
+This document proves that the `voom` features used by the random forest
+analysis (`02-Analyses/04-ML-RF-LODO-gradient.qmd`, `transform = "voom"`) are
+**exactly** the values modeled by limma in the PD-Control meta-analysis
+(`02-Analyses/03-PD-metaAnalysis.qmd`).
+
+The two analyses compute voom differently:
+
+- **03 (meta-analysis)**: per dataset, `limmaTSE(voom.transform = TRUE)` runs
+  `limma::voom(counts, design)` on the features detected in that dataset.
+- **04 (random forest)**: once, on all usable datasets together,
+  `voom_transform()` (`utils/voom_transform.R`) computes
+  `log2((counts + 0.5) / (lib.size + 1) * 1e6)` without fitting a model.
+
+They agree because voom's `$E` is a sample-wise transformation: the design only
+affects the precision weights, and dropping features that are all-zero in a
+dataset does not change its samples' library sizes. The checks below verify
+this numerically, with exact (bit-for-bit) equality.
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+
+library(mia)
+library(tidyverse)
+library(limma)
+library(knitr)
+library(biobakeryUtils)
+
+# the function used by 04-ML-RF-LODO-gradient.qmd
+source("../utils/voom_transform.R")
+
+outdir <- file.path("voom-replication", params$biobakery_tool)
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
+```
+
+# Same samples
+
+Both analyses start from the same filtering, copied from
+`03-PD-metaAnalysis.qmd` and `04-ML-RF-LODO-gradient.qmd`.
+
+```{r shared sample filtering}
+# Parkinson as target condition
+Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
+Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) > 0, ]
+Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
+
+# at least 10 cases and 10 controls per dataset (same rule in 03 and 04)
+ok_datasets <- Input_parkinson.tse@colData %>%
+  as.data.frame() %>%
+  group_by(study_name) %>%
+  filter(
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
+  )
+
+usable.tse <- Input_parkinson.tse[, Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
+
+kable(table(usable.tse$study_name, usable.tse$parkinson_for_analysis))
+```
+
+# voom as computed in each analysis
+
+```{r 03 meta-analysis voom}
+# 03: per dataset, as limmaTSE(assay.type = "counts", voom.transform = TRUE,
+#     formula = ~ parkinson_for_analysis) does internally
+per_dataset.tse <- splitOn(usable.tse, group = "study_name")
+
+voom_03 <- lapply(per_dataset.tse, function(x.tse) {
+  x.tse <- x.tse[rowSums(assay(x.tse)) > 0, ]
+  design <- model.matrix(~ parkinson_for_analysis, data = as.data.frame(colData(x.tse)))
+  limma::voom(counts = assay(x.tse, "counts"), design = design)
+})
+```
+
+```{r 04 random forest voom}
+# 04: once, on all usable datasets, after dropping features absent from all of them
+rf.tse <- usable.tse[rowSums(assay(usable.tse, "counts")) > 0, ]
+voom_04 <- voom_transform(assay(rf.tse, "counts"))
+dim(voom_04)
+```
+
+# Checks
+
+## 1. The 03 voom matches what `limmaTSE` actually used
+
+Fitting limma on the per-dataset voom objects above must reproduce the `Beta`
+and `SE` returned by `limmaTSE` in 03. This ties the reconstruction above to the
+meta-analysis inputs.
+
+```{r check limmaTSE}
+check_limmaTSE <- sapply(names(per_dataset.tse), function(ds) {
+  x.tse <- per_dataset.tse[[ds]]
+  x.tse <- x.tse[rowSums(assay(x.tse)) > 0, ]
+  res <- limmaTSE(tse = x.tse, assay.type = "counts", voom.transform = TRUE,
+                  formula = ~ parkinson_for_analysis, coef = "parkinson_for_analysisPD",
+                  p.adj_method = "BH")
+
+  v <- voom_03[[ds]]
+  fit <- eBayes(lmFit(v, v$design))
+  beta <- fit$coefficients[res$FeatureID, "parkinson_for_analysisPD"]
+  se <- (sqrt(fit$s2.post) * fit$stdev.unscaled[, "parkinson_for_analysisPD"])[res$FeatureID]
+
+  c(Beta_equal = isTRUE(all.equal(unname(beta), res$Beta, tolerance = 0)),
+    SE_equal   = isTRUE(all.equal(unname(se), res$SE, tolerance = 0)))
+}, simplify = FALSE) %>%
+  bind_rows(.id = "study_name") %>%
+  mutate(across(-study_name, as.logical))
+
+kable(check_limmaTSE)
+```
+
+## 2. Same features
+
+The random forest features are the union of the features tested per dataset in
+the meta-analysis.
+
+```{r check features}
+features_03 <- sort(unique(unlist(lapply(voom_03, rownames))))
+features_04 <- sort(rownames(voom_04))
+
+check_features <- tibble(
+  n_features_03_union = length(features_03),
+  n_features_04       = length(features_04),
+  identical_sets      = identical(features_03, features_04)
+)
+kable(check_features)
+```
+
+## 3. Same library sizes and same values
+
+For every dataset, the 04 matrix restricted to that dataset's samples and to
+the features tested there in 03 must be identical to the 03 voom values.
+
+```{r check values}
+check_values <- sapply(names(voom_03), function(ds) {
+  v <- voom_03[[ds]]
+  sub_04 <- voom_04[rownames(v$E), colnames(v$E), drop = FALSE]
+  tibble(
+    n_samples          = ncol(v$E),
+    n_features_03      = nrow(v$E),
+    # features in the RF matrix that 03 did not test in this dataset (all-zero
+    # counts there): their voom value is log2(0.5 / (lib.size + 1) * 1e6)
+    n_features_extra_04 = nrow(voom_04) - nrow(v$E),
+    lib_size_identical = identical(unname(v$targets$lib.size),
+                                   unname(colSums(assay(rf.tse, "counts"))[colnames(v$E)])),
+    values_identical   = identical(unname(v$E), unname(sub_04)),
+    max_abs_difference = max(abs(v$E - sub_04))
+  )
+}, simplify = FALSE) %>%
+  bind_rows(.id = "study_name")
+
+kable(check_values, digits = 20)
+```
+
+## 4. Extra features are voom-transformed zeros
+
+```{r check extra features}
+extra_values_ok <- sapply(names(voom_03), function(ds) {
+  v <- voom_03[[ds]]
+  extra <- setdiff(rownames(voom_04), rownames(v$E))
+  if (length(extra) == 0) return(TRUE)
+  lib <- colSums(assay(rf.tse, "counts"))[colnames(v$E)]
+  expected <- matrix(log2(0.5 / (lib + 1) * 1e6), nrow = length(extra),
+                     ncol = length(lib), byrow = TRUE)
+  zero_counts <- all(assay(rf.tse, "counts")[extra, colnames(v$E)] == 0)
+  zero_counts && isTRUE(all.equal(unname(voom_04[extra, colnames(v$E)]), expected))
+})
+kable(tibble(study_name = names(extra_values_ok), extra_features_are_voom_zeros = extra_values_ok))
+```
+
+# Verdict
+
+```{r verdict}
+all_ok <- all(unlist(check_limmaTSE[, -1])) &&
+  check_features$identical_sets &&
+  all(check_values$lib_size_identical) &&
+  all(check_values$values_identical) &&
+  all(extra_values_ok)
+
+write_tsv(check_values, file.path(outdir, "voom_replication_checks.tsv"))
+
+# stop rendering if the replication fails
+stopifnot("voom replication failed: see the tables above" = all_ok)
+
+cat(sprintf(
+  "PASSED (%s): the random forest voom features are identical to the values modeled by limma in the meta-analysis, across %d datasets and %d features.\n",
+  params$biobakery_tool, nrow(check_values), length(features_04)
+))
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
