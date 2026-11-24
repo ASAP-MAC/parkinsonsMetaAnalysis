@@ -38,7 +38,7 @@ theme_set(theme_bw())
 outdir <- sprintf("SupplementaryFigures")
 dir.create(outdir, recursive = TRUE)
 
-pd_color_palette <- c("Control" = "gray60", "PD" = "#D9565CFF")
+pd_color_palette <- c("Control" = "gray60", "PD" = "#EBA07EFF")
 
 # generate an incremental figure index
 suppFigIndx <- 1
@@ -54,13 +54,14 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have more than 10 samples in cases and more than 10 in controls
-ok_datasets <- Input_parkinson.tse@colData %>% 
-  as.data.frame() %>% 
-  group_by(study_name) %>% 
+# Each dataset should have at least 10 samples in cases and 10 in controls
+# (same rule as 02-Analyses/03-PD-metaAnalysis.qmd)
+ok_datasets <- Input_parkinson.tse@colData %>%
+  as.data.frame() %>%
+  group_by(study_name) %>%
   filter(
-    sum(parkinson_for_analysis == "Control") > 10,
-    sum(parkinson_for_analysis == "PD") > 10
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
   )
 
 ## filter TSE to restrict to 'ok' datasets 
@@ -121,56 +122,166 @@ detection_curve.gg <- detect_curve.df %>%
     x = "Detection minimum abundance ([0-1])"
   )
 
-preval_detect_plots.gg <- ggarrange(prevalence_curve.gg, detection_curve.gg)
+preval_detect_plots.gg <- ggarrange(prevalence_curve.gg, detection_curve.gg, labels = c("a", "b"))
 
 
 ggsave(plot = preval_detect_plots.gg, filename = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.svg", outdir, suppFigIndx), height =4.5, width = 9)
 saveRDS(preval_detect_plots.gg, file = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.rds", outdir, suppFigIndx))
 
-suppFigIndx <- suppFigIndx + 1
 preval_detect_plots.gg
 ```
 
-## Supplementary figure `r suppFigIndx` - read depth does not vary by PD-Control status
+**Supplementary figure `r suppFigIndx`. Choice of prevalence and detection thresholds for feature filtering.** Number of SGBs retained in the PD-control data (9 datasets, 1,625 samples) as a function of (a) the minimum prevalence, i.e. the percentage of samples in which an SGB is detected, and (b) the minimum relative abundance for an SGB to be considered detected (log10 scale). Prevalence was computed across all samples pooled. Red lines mark the thresholds applied in the analyses: 5% prevalence, where the curve in (a) flattens, and a relative abundance of 10⁻⁴. Samples with fewer than 2 million reads had been excluded beforehand.
 
-```{r calculate stats and make plot}
-stats.df <- data_for_plot.df %>% 
-  group_by(study_name) %>% 
-  rstatix::t_test(million_reads ~ parkinson_for_analysis) %>% 
-  ungroup() %>%                              # <-- ungroup BEFORE adjusting
-  rstatix::adjust_pvalue(method = "BH") %>% 
-  rstatix::add_xy_position(x = "parkinson_for_analysis") %>% 
-  mutate(
-    p.adj.fmt = format_p_value(p.adj, digits = 2)
-  )
+```{r, echo=FALSE}
+suppFigIndx <- suppFigIndx + 1
+```
 
-#' this test is a omnibus test that answers the question: 
-#' "are there differences in read depth between PD and Controls once we account
-#' for per-dataset differences in depth (by blocking for dataset)?"
-random_eff_test <- lmerTest::lmer(million_reads ~ parkinson_for_analysis + (1 | study_name), data = data_for_plot.df)
-random_eff_tidy.df <- broom.mixed::tidy(random_eff_test)
-random_eff_params <- unlist(random_eff_tidy.df[random_eff_tidy.df$term == "parkinson_for_analysisPD", c("estimate", "p.value")])
+## Supplementary figure `r suppFigIndx` - read depth by PD-Control status
 
-signif_label <- sprintf("Eff. size = %.3f; P = %.3f", random_eff_params[1], random_eff_params[2])
+Read depth is right-skewed and differs by orders of magnitude between datasets,
+so it is analyzed on the `log10` scale: effects are ratios of geometric mean
+depths (PD / Control). Per dataset, `lm(log10(reads) ~ parkinson_for_analysis)`
+estimates the log10 ratio and its SE; the ratios are pooled with the same
+random-effects model used in the meta-analyses (REML, Knapp-Hartung).
 
-reads_vs_dataset_color_PD <- ggplot(data_for_plot.df, aes(x = study_name, y = million_reads, color = parkinson_for_analysis)) +
-  geom_boxplot() + 
-  ggpubr::stat_pvalue_manual(data = stats.df, x = "study_name", label = "p.adj.fmt") + 
-  scale_color_manual(values = pd_color_palette) + 
-  annotate("text", x = -Inf, y = Inf, label = signif_label, hjust = -0.1, vjust = 1.5) +
+A non-significant difference does not prove the absence of a difference, so
+equivalence is tested formally (TOST) against a margin of ±10% depth: the
+pooled ratio is equivalent if its 90% CI lies within the margin.
+
+Low-depth samples (< 2M reads) are where rare SGBs drop out, so their number is
+reported per dataset and group.
+
+```{r read depth equivalence}
+depth_threshold <- 2e6
+# equivalence margin: PD/Control depth ratio within [1/1.1, 1.1], i.e. ±10%
+equivalence_margin <- log10(1.1)
+
+depth.df <- data_for_plot.df %>%
+  filter(!is.na(reads_processed)) %>%
+  mutate(log10_reads = log10(reads_processed))
+
+# per-dataset log10 ratio of depths, PD vs Control
+per_study_depth.df <- depth.df %>%
+  group_by(study_name) %>%
+  group_modify(function(x, ...) {
+    fit <- lm(log10_reads ~ parkinson_for_analysis, data = x)
+    coefs <- summary(fit)$coefficients["parkinson_for_analysisPD", ]
+    ci <- confint(fit)["parkinson_for_analysisPD", ]
+    tibble(
+      n_Control = sum(x$parkinson_for_analysis == "Control"),
+      n_PD      = sum(x$parkinson_for_analysis == "PD"),
+      Beta      = coefs[["Estimate"]],
+      SE        = coefs[["Std. Error"]],
+      CI.L      = ci[[1]],
+      CI.R      = ci[[2]],
+      P.Value   = coefs[["Pr(>|t|)"]]
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(P.Value.adj = p.adjust(P.Value, method = "BH"))
+
+# pooled ratio, same random-effects model as the meta-analyses
+pooled_depth <- metafor::rma(yi = per_study_depth.df$Beta, sei = per_study_depth.df$SE,
+                             method = "REML", test = "knha")
+
+# TOST equivalence test on the pooled estimate (t distribution, Knapp-Hartung df)
+tost_p <- max(
+  pt((pooled_depth$beta[[1]] + equivalence_margin) / pooled_depth$se, df = pooled_depth$ddf, lower.tail = FALSE),
+  pt((pooled_depth$beta[[1]] - equivalence_margin) / pooled_depth$se, df = pooled_depth$ddf, lower.tail = TRUE)
+)
+ci90 <- pooled_depth$beta[[1]] + c(-1, 1) * qt(0.95, pooled_depth$ddf) * pooled_depth$se
+
+pooled_depth.df <- tibble(
+  study_name  = "Pooled (random effects)",
+  Beta        = pooled_depth$beta[[1]],
+  SE          = pooled_depth$se,
+  CI.L        = pooled_depth$ci.lb,
+  CI.R        = pooled_depth$ci.ub,
+  CI90.L      = ci90[1],
+  CI90.R      = ci90[2],
+  P.Value     = pooled_depth$pval,
+  I2          = pooled_depth$I2,
+  Het.Pval    = pooled_depth$QEp,
+  TOST.P.Value = tost_p
+)
+
+# ratios on the natural scale for the tables
+to_ratio <- function(df) mutate(df, across(any_of(c("Beta", "CI.L", "CI.R", "CI90.L", "CI90.R")), ~ 10^.x, .names = "ratio_{.col}"))
+
+per_study_depth.df %>%
+  to_ratio() %>%
+  select(study_name, n_Control, n_PD, ratio_Beta, ratio_CI.L, ratio_CI.R, P.Value, P.Value.adj) %>%
+  kable(digits = 3, caption = "Per-dataset ratio of geometric mean read depth (PD / Control)")
+
+pooled_depth.df %>%
+  to_ratio() %>%
+  select(study_name, ratio_Beta, ratio_CI.L, ratio_CI.R, ratio_CI90.L, ratio_CI90.R, P.Value, I2, Het.Pval, TOST.P.Value) %>%
+  kable(digits = 3, caption = sprintf("Pooled ratio; TOST equivalence margin: [%.3f, %.3f]",
+                                      10^-equivalence_margin, 10^equivalence_margin))
+```
+
+```{r read depth plot}
+# A: per-dataset depth distributions (log scale) with BH-adjusted per-dataset P
+p_labels.df <- depth.df %>%
+  group_by(study_name) %>%
+  summarise(y = max(reads_processed) * 1.6 / 1e6, .groups = "drop") %>%
+  left_join(per_study_depth.df, by = "study_name") %>%
+  mutate(label = format_p_value(P.Value.adj, digits = 1))
+
+reads_boxplots.gg <- ggplot(depth.df, aes(x = study_name, y = million_reads, color = parkinson_for_analysis)) +
+  geom_hline(yintercept = depth_threshold / 1e6, linetype = "dashed", color = "gray40") +
+  geom_boxplot(outlier.size = 0.8) +
+  geom_text(data = p_labels.df, aes(x = study_name, y = y, label = label),
+            inherit.aes = FALSE, size = 3, angle = 90) +
+  scale_y_log10() +
+  scale_color_manual(values = pd_color_palette) +
   labs(
     color = NULL,
     x = NULL,
-    y = "Million reads per sample"
-  ) + 
+    y = "Million reads per sample (log10 scale)"
+  ) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "top")
 
-# save plot
-ggsave(plot = reads_vs_dataset_color_PD, filename = sprintf("%s/SupplementaryFigure %s-Read-depth-by-dataset-and-PD.svg", outdir, suppFigIndx), height = 6, width = 6)
+# B: forest plot of depth ratios with the equivalence margin
+forest.df <- bind_rows(
+  per_study_depth.df %>% mutate(type = "Dataset"),
+  pooled_depth.df %>% mutate(type = "Pooled")
+) %>%
+  mutate(study_name = factor(study_name, levels = rev(c(levels(depth.df$study_name), "Pooled (random effects)"))))
+
+reads_forest.gg <- ggplot(forest.df, aes(y = study_name, x = 10^Beta, xmin = 10^CI.L, xmax = 10^CI.R)) +
+  annotate("rect", xmin = 10^-equivalence_margin, xmax = 10^equivalence_margin,
+           ymin = -Inf, ymax = Inf, alpha = 0.15, fill = "steelblue") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray40") +
+  geom_errorbar(width = 0.2) +
+  geom_point(aes(shape = type, size = type)) +
+  scale_shape_manual(values = c(Dataset = 16, Pooled = 18), guide = "none") +
+  scale_size_manual(values = c(Dataset = 2, Pooled = 4), guide = "none") +
+  scale_x_log10() +
+  labs(
+    x = "Read depth ratio PD / Control (95% CI)",
+    y = NULL,
+    caption = sprintf("Shaded: ±10%% equivalence margin. Pooled ratio = %.2f [%.2f, %.2f]; I² = %.0f%%; TOST P = %s",
+                      10^pooled_depth$beta[[1]], 10^pooled_depth$ci.lb, 10^pooled_depth$ci.ub,
+                      pooled_depth$I2, format_p_value(tost_p, digits = 2))
+  )
+
+reads_vs_dataset_color_PD <- ggarrange(reads_boxplots.gg, reads_forest.gg, ncol = 2, labels = c("a", "b"), widths = c(1.2, 1))
+
+# save plot and tables
+ggsave(plot = reads_vs_dataset_color_PD, filename = sprintf("%s/SupplementaryFigure %s-Read-depth-by-dataset-and-PD.svg", outdir, suppFigIndx), height = 6, width = 12)
 saveRDS(reads_vs_dataset_color_PD, file = sprintf("%s/SupplementaryFigure %s-Read-depth-by-dataset-and-PD.rds", outdir, suppFigIndx))
+write_tsv(bind_rows(per_study_depth.df, pooled_depth.df),
+          file = sprintf("%s/SupplementaryFigure %s-Read-depth-ratios.tsv", outdir, suppFigIndx))
 
+reads_vs_dataset_color_PD
+```
+
+**Supplementary figure `r suppFigIndx`. Sequencing depth of PD and control samples.** (a) Number of reads per sample (millions, log10 scale) in each dataset, by PD/control status. Values above each dataset are Benjamini-Hochberg adjusted p-values (FDR) from a per-dataset linear model of log10(reads) on PD/control status. The dashed line marks 2 million reads, the minimum depth required for a sample to be included. (b) Ratio of the geometric mean depth of PD to control samples, with 95% confidence intervals, for each dataset (circles) and pooled across datasets (diamond). Per-dataset estimates from (a) were pooled with the same random-effects model used for the main meta-analysis (REML with Knapp-Hartung adjustment). The shaded area marks the ±10% equivalence margin (ratio between 0.91 and 1.10). I²: proportion of variability due to heterogeneity between datasets. TOST P: p-value of the two one-sided tests for equivalence; values below 0.05 indicate that the pooled ratio lies within the equivalence margin.
+
+```{r, echo=FALSE}
 suppFigIndx <- suppFigIndx + 1
-
 ```
 
 ## Supplementary Figure `r suppFigIndx` - Beta diversity, unconstrained PCoA (Bray-Curtis)
@@ -210,8 +321,8 @@ PCoA_plot_col_parkinson <- pcoa_data.df %>%
   )
 
 # save plot
-ggsave(plot = PCoA_plot_col_parkinson, filename = sprintf("%s/SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.svg", outdir, suppFigIndx), height = 6, width = 6)
-saveRDS(PCoA_plot_col_parkinson, file = sprintf("%s/SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.rds", outdir, suppFigIndx))
+ggsave(plot = PCoA_plot_col_parkinson, filename = file.path(outdir, sprintf("SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.svg", suppFigIndx)), height = 6, width = 6)
+saveRDS(PCoA_plot_col_parkinson, file = file.path(outdir, sprintf("SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.svg", suppFigIndx)))
 
 suppFigIndx <- suppFigIndx + 1
 PCoA_plot_col_parkinson
