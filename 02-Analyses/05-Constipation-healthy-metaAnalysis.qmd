@@ -10,8 +10,6 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
-  preval_thresh: 0.05
-  detect_thresh: 1e-5
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
@@ -46,7 +44,7 @@ Input_constipation_healthy.tse <- Input_constipation_healthy.tse[,!is.na(Input_c
 Input_constipation_healthy.tse <- Input_constipation_healthy.tse[, Input_constipation_healthy.tse$study_name != "BoktorJC_2023.2"]
 
 # Prevalence and detection filter
-Input_constipation_healthy.tse <- subsetByPrevalent(Input_constipation_healthy.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+Input_constipation_healthy.tse <- subsetByPrevalent(Input_constipation_healthy.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
 
 Input_constipation_healthy.tse
 ```

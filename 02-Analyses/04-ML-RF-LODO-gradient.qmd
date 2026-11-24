@@ -14,8 +14,6 @@ params:
   # "relative_abundance": the relative_abundance assay as is
   # "voom": limma::voom log2-CPM of the counts assay, as in 03-PD-metaAnalysis
   transform: "relative_abundance"
-  preval_thresh: 0.05
-  detect_thresh: 1e-5
 ---
 
 The reasoning for this analysis is trying to see if predictions by Random Forest
@@ -99,7 +97,7 @@ Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$s
 Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse, "counts")) > 0, ]
 
 # ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, prevalence = params$preval_thresh, detection = params$detect_thresh)
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
 
 Input_parkinson_usableDatasets.tse
 ```

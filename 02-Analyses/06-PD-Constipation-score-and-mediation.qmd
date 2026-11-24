@@ -10,8 +10,6 @@ format:
 editor: source
 params:
   biobakery_tool: "HUMAnN"
-  preval_thresh: 0.05
-  detect_thresh: 1e-5
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
