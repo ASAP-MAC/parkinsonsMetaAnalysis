@@ -95,7 +95,7 @@ can be cut as follows:
   
   - Slow: $BMPW < 3$
   - Normal: $3\leqslant BMPW \leqslant 21$
-  - Fast: $BMPW \geq 21$
+  - Fast: $BMPW > 21$
 
 **BoktorJC_2023** has a Bristol stool scale variable. It can be categorized into
 stool with different moisture. Less moisture tends to correlate with slow transit
@@ -145,11 +145,15 @@ MetaPhlAn_data_merged.tse$constipation_for_analysis <- case_when(
 
 # Create Boktor intermediate constipation into constipation_for_analysis
 ## 1 - group bristol scores
+## the variable is character and includes "not provided": convert to numeric
+## (non-numbers become NA) so it is not compared as text, and use bounded
+## ranges so that "Fast" can be reached (case_when stops at the first TRUE)
+bristol_score <- suppressWarnings(as.numeric(MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2))
 MetaPhlAn_data_merged.tse$constipation_boktor_bristol <- case_when(
-  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 <= 2 ~ "Slow",
-  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 2 ~ "Normal",
-  MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2 > 5 ~ "Fast",
-  TRUE ~ MetaPhlAn_data_merged.tse$BoktorJC_2023_uncurated_bristol_stool_scale2
+  bristol_score <= 2 ~ "Slow",
+  bristol_score <= 5 ~ "Normal",
+  bristol_score <= 7 ~ "Fast",
+  TRUE ~ NA
 )
 
 ## 2 - make an OR statement with variable just created
@@ -167,10 +171,12 @@ MetaPhlAn_data_merged.tse$constipation_for_analysis <- coalesce(MetaPhlAn_data_m
 
 # merge Nishiwaki stool_frequency into the main constipation_for_analysis:
 ## 1 - Curate nishiwaki constipation from the stool frequency
-MetaPhlAn_data_merged.tse$constipation_nishiwaki <-  case_when(
-  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) < 3 ~ "Slow",
-  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 3 ~ "Normal",
-  as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency) >= 21 ~ "Fast",
+## bounded ranges so that "Fast" can be reached (case_when stops at the first TRUE)
+stool_frequency <- suppressWarnings(as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency))
+MetaPhlAn_data_merged.tse$constipation_nishiwaki <- case_when(
+  stool_frequency < 3 ~ "Slow",
+  stool_frequency <= 21 ~ "Normal",
+  stool_frequency > 21 ~ "Fast",
   TRUE ~ NA)
 
 # make the variable a factor with Normal as baseline
