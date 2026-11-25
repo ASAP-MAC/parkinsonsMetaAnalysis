@@ -131,7 +131,8 @@ saveRDS(preval_detect_plots.gg, file = sprintf("%s/SupplementaryFigure %s-Preval
 preval_detect_plots.gg
 ```
 
-**Supplementary figure `r suppFigIndx`. Choice of prevalence and detection thresholds for feature filtering.** Number of SGBs retained in the PD-control data (9 datasets, 1,625 samples) as a function of (a) the minimum prevalence, i.e. the percentage of samples in which an SGB is detected, and (b) the minimum relative abundance for an SGB to be considered detected (log10 scale). Prevalence was computed across all samples pooled. Red lines mark the thresholds applied in the analyses: 5% prevalence, where the curve in (a) flattens, and a relative abundance of 10⁻⁴. Samples with fewer than 2 million reads had been excluded beforehand.
+**Supplementary figure `r suppFigIndx`. Choice of prevalence and detection thresholds for feature filtering.** Number of SGBs retained in the PD-control data (9 datasets, 1,625 samples) as a function of (a) the minimum prevalence, i.e. the percentage of samples in which a SGB is detected, and (b) the minimum relative abundance for a SGB to be considered detected (log10 scale). Prevalence was computed across all samples pooled. Red lines mark the thresholds applied in the analyses: 5% prevalence, where the curve in (a) flattens, and a relative abundance of 10⁻⁴. Samples with fewer than 2 million reads were 
+excluded beforehand.
 
 ```{r, echo=FALSE}
 suppFigIndx <- suppFigIndx + 1
