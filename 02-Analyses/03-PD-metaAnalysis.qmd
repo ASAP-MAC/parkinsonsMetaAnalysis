@@ -10,6 +10,9 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 Choices for `relative_abundance` data:
@@ -22,7 +25,9 @@ Choices for `relative_abundance` data:
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "03-PD-meta-analysis", params$biobakery_tool)
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "03-PD-meta-analysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -61,7 +66,9 @@ ok_datasets <- Input_parkinson.tse@colData %>%
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
 # ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+if (params$filterFeatures) {
+  Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
+}
 
 Input_parkinson_usableDatasets.tse
 ```

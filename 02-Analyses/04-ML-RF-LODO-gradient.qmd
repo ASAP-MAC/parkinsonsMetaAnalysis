@@ -14,6 +14,9 @@ params:
   # "relative_abundance": the relative_abundance assay as is
   # "voom": limma::voom log2-CPM of the counts assay, as in 03-PD-metaAnalysis
   transform: "relative_abundance"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 The reasoning for this analysis is trying to see if predictions by Random Forest
@@ -22,8 +25,63 @@ can improve if more samples were collected.
 To do so, in each LODO iteration we will try to predict the PD-Control set using
 any combination possible of the remaining datasets, including single, pairs, groups of 3, ...
 
-We will record the number of samples in each training set and the AUC obtained 
+We will record the number of samples in each training set and the AUC obtained
 with that test set.
+
+::: {.callout-warning}
+## Caveat on `transform: "voom"` (noted 2026-11-25, kept for now)
+
+**Observed** (results of 2026-11-23, run with `mtry = 10`, comparing the same
+2,295 models per tool; to re-check after re-running with the default `mtry`):
+
+| Tool | cor(AUC relab, AUC voom) | mean AUC difference (voom - relab) |
+|---|---|---|
+| MetaPhlAn | 0.27 | -0.16 |
+| HUMAnN | 0.84 | -0.02 |
+
+With 8 training datasets, MetaPhlAn-voom gives AUC 0.38 (MaoL_2021), 0.42
+(QianY_2020), 0.44 (BedarfJR_2017), 0.46 (BoktorJC_2023), i.e. at or below
+chance, while relative abundance gives 0.63-0.84 on the same test sets.
+
+**Likely cause** (data verified, mechanism inferred):
+
+- voom maps a zero to `log2(0.5 / (lib.size + 1) * 1e6)`, so the value of a
+  zero depends on the sample's depth. In these data it ranges from -2.05
+  (shallow samples) to -9.45 (deep samples).
+- The smallest non-zero voom value is -3.56, so a non-detected SGB in a shallow
+  sample can rank above a detected SGB in a deep sample.
+- MetaPhlAn input is 94% zeros, so nearly every rare SGB becomes a proxy for
+  sequencing depth.
+- Depth differs ~10-fold between studies (median 10M reads in BoktorJC_2023,
+  102M in MaoL_2021), so trees can learn depth / study splits that do not
+  transfer to a new study.
+- HUMAnN is less affected because it has fewer zeros (44%).
+- Untested: re-fitting with all zeros set to one constant value would confirm
+  or rule out this mechanism.
+
+**voom brings nothing to random forests.** A tree split depends only on the
+order of values within a feature, so any order-preserving transformation (log,
+square root, scaling) gives the same forest as relative abundance. The only real
+effect of log2-CPM here is the depth-dependent pseudocount, which breaks that
+order. If voom is kept, it should be reported as a sensitivity analysis together
+with this caveat, not as an equivalent alternative.
+
+**Other open points for this analysis:**
+
+- `mtry` changed on 2026-11-25 from a fixed 10 to the ranger default,
+  floor(sqrt(p)): 57 for MetaPhlAn (3,309 SGBs) and 24 for HUMAnN (599
+  pathways). Results from before this date used `mtry = 10` and must be
+  regenerated, together with Figure 3. Expect longer runs: up to ~5x for
+  MetaPhlAn and ~2.4x for HUMAnN.
+- No overall LODO performance is reported. Add the median and range of the
+  per-dataset AUCs, or a random-effects meta-analysis of them.
+- In the gradient analysis, the number of samples, the number of datasets and
+  whether WallenZD_2022 is in the training set all change together.
+  WallenZD_2022 has 724 of 1,625 samples (45%) and 68% PD.
+- The 2,295 AUCs are not independent: within a test dataset they share the
+  same test samples and overlapping training sets. Keep the trend descriptive,
+  with no p-value, unless the model accounts for this.
+:::
 
 ```{r setup, message=FALSE, warning=FALSE}
 # check parameters
@@ -32,8 +90,10 @@ stopifnot(
   params$transform %in% c("relative_abundance", "voom")
 )
 
-# create base directory output, e.g. results/04-RF-LODO-PD-vs-Control/MetaPhlAn-voom
-outdir <- file.path("results", "04-RF-LODO-PD-vs-Control", sprintf("%s-%s", params$biobakery_tool, params$transform))
+# create base directory output, e.g. results-filteredFeatures/04-RF-LODO-PD-vs-Control/MetaPhlAn-voom
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "04-RF-LODO-PD-vs-Control", sprintf("%s-%s", params$biobakery_tool, params$transform))
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # voom_transform(): limma::voom()$E without fitting a model
@@ -97,7 +157,9 @@ Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$s
 Input_parkinson_usableDatasets.tse <- Input_parkinson_usableDatasets.tse[rowSums(assay(Input_parkinson_usableDatasets.tse, "counts")) > 0, ]
 
 # ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+if (params$filterFeatures) {
+  Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
+}
 
 Input_parkinson_usableDatasets.tse
 ```
@@ -169,7 +231,7 @@ trained_models_ranger.list <- sapply(datasets, function(ds) {
       x           = train_features,
       y           = train_labels,
       num.trees   = 2000,
-      mtry        = 10,
+      # mtry: ranger default, floor(sqrt(number of features))
       probability = TRUE,
       num.threads = 1,
       seed        = myseed

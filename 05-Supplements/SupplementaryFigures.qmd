@@ -110,14 +110,15 @@ detect_curve.df <- data.frame(
 )
 
 detection_curve.gg <- detect_curve.df %>% 
-  ggplot(aes(x = detection_thr*100, y = nFeatures)) + 
-  geom_point() + 
-  geom_line(aes(group =1)) + 
-  scale_x_log10() + 
-  geom_vline(xintercept = 1e-4, color = "red2") + 
+  # x on the same [0-1] scale as the threshold used in subsetByPrevalent
+  ggplot(aes(x = detection_thr, y = nFeatures)) +
+  geom_point() +
+  geom_line(aes(group =1)) +
+  geom_vline(xintercept = 1e-5, color = "red2") +
+  scale_x_log10() +
   labs(
-    title = "Detection threshold starts to matter at ~ 1%",
-    subtitle = "Detection threshold of 1e-4 was chosen",
+    title = "Detection thresholds",
+    subtitle = "A low detection threshold of 1e-5 was chosen",
     y = "N Features retained by filter",
     x = "Detection minimum abundance ([0-1])"
   )
@@ -127,11 +128,13 @@ preval_detect_plots.gg <- ggarrange(prevalence_curve.gg, detection_curve.gg, lab
 
 ggsave(plot = preval_detect_plots.gg, filename = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.svg", outdir, suppFigIndx), height =4.5, width = 9)
 saveRDS(preval_detect_plots.gg, file = sprintf("%s/SupplementaryFigure %s-Prevalence and detection thresholds.rds", outdir, suppFigIndx))
+```
 
+```{r, fig.height=6, fig.width=11}
 preval_detect_plots.gg
 ```
 
-**Supplementary figure `r suppFigIndx`. Choice of prevalence and detection thresholds for feature filtering.** Number of SGBs retained in the PD-control data (9 datasets, 1,625 samples) as a function of (a) the minimum prevalence, i.e. the percentage of samples in which a SGB is detected, and (b) the minimum relative abundance for a SGB to be considered detected (log10 scale). Prevalence was computed across all samples pooled. Red lines mark the thresholds applied in the analyses: 5% prevalence, where the curve in (a) flattens, and a relative abundance of 10⁻⁴. Samples with fewer than 2 million reads were 
+**Supplementary figure `r suppFigIndx`. Choice of prevalence and detection thresholds for feature filtering.** Number of SGBs retained in the PD-control data (9 datasets, 1,625 samples) as a function of (a) the minimum prevalence, i.e. the percentage of samples in which a SGB is detected, and (b) the minimum relative abundance for a SGB to be considered detected (log10 scale). Prevalence was computed across all samples pooled. Red lines mark the thresholds applied in the analyses: 5% prevalence, where the curve in (a) flattens, and a relative abundance of 10⁻⁵. Samples with fewer than 2 million reads were 
 excluded beforehand.
 
 ```{r, echo=FALSE}

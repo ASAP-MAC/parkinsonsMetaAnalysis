@@ -9,8 +9,10 @@ format:
     toc-depth: 2
 editor: source
 params:
-  outdir: "results/Figure-3-PD-Constipation"
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup}
@@ -24,7 +26,10 @@ library(rstatix)
 theme_set(theme_bw())
 
 # create output directory for the figure
-dir.create(params$outdir, recursive = TRUE, showWarnings = TRUE)
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "Figure-4-Constipation")
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # infer the tested unit from the biobakery tool
 tested_unit <- ifelse(params$biobakery_tool == "MetaPhlAn", "SGB", "pathway")
@@ -36,12 +41,12 @@ palette_constipation <- c(Fast = "#B7E3CC", Normal = "gray40", Slow = "#5678B6")
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
 # initialize path where to retrieve and write results
-results_input_dir <- file.path("..", "02-Analyses", "results")
+results_input_dir <- file.path("..", "02-Analyses", baseout)
 ```
  
 ```{r read and incorporate constipation score}
 # load per-subject constipation scores
-constipation_scores <- read_tsv(file.path("..", "05-Supplements", "Supplementary Tables", sprintf("constipation_score_%s.tsv", params$biobakery_tool)))
+constipation_scores <- read_tsv(file.path(results_input_dir, "06-Constipation-score-and-mediation", params$biobakery_tool, sprintf("constipation_scores_per_sample_%s.tsv", params$biobakery_tool)))
 
 full_metadata.df <- as.data.frame(colData(Input.tse)) %>% 
   dplyr::left_join(constipation_scores, by = "uuid")
@@ -73,9 +78,9 @@ transit_time_histogram.gg <- ggplot(asnicar_data_for_plot, aes(x = transit_time_
     )
 
 # save svg plot
-ggsave(plot = transit_time_histogram.gg, filename = file.path(params$outdir, "panelA-BluePoo-transit-time-histogram.svg"), height = 5, width = 5)
+ggsave(plot = transit_time_histogram.gg, filename = file.path(outdir, "panelA-BluePoo-transit-time-histogram.svg"), height = 5, width = 5)
 # save rds plot
-saveRDS(transit_time_histogram.gg, file = file.path(params$outdir, "panelA-BluePoo-transit-time-histogram.rds"))
+saveRDS(transit_time_histogram.gg, file = file.path(outdir, "panelA-BluePoo-transit-time-histogram.rds"))
 
 transit_time_histogram.gg
 ```
@@ -257,7 +262,7 @@ score2_panel.gg
 ## Panel B - Mediation scatterplot
 
 ```{r}
-results_clean <- read_tsv(file.path(results_input_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
+results_clean <- read_tsv(file.path(results_input_dir, "06-Constipation-score-and-mediation", params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
 
 wallen_PD_Control_DA <- read_tsv(file.path(results_input_dir, "03-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
   filter(study_name == "WallenZD_2022") %>% 
@@ -352,7 +357,7 @@ Figure_3_panel <- ggarrange(top_piece, bottom_piece, nrow = 2, heights = c(1, 0.
 
 Figure_3_panel
 
-ggsave(plot = Figure_3_panel, filename = file.path("results", sprintf("Figure4-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
+ggsave(plot = Figure_3_panel, filename = file.path(outdir, sprintf("Figure4-Constipation-%s.svg", params$biobakery_tool)), height = 10, width = 9)
 ```
 
 # Session info

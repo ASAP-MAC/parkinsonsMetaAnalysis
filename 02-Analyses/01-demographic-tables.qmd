@@ -91,20 +91,20 @@ table1_availSex <- Input.tse %>%
 Input_parkinson.tse <- Input.tse[, Input.tse$target_condition == "Parkinson Disease"]
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have more than 10 samples in cases and more than 10 in controls
+# Each dataset should have at least 10 samples in cases and 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
   filter(
-    sum(parkinson_for_analysis == "Control") > 10,
-    sum(parkinson_for_analysis == "PD") > 10
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
   )
 
 ## filter TSE to restrict to 'ok' datasets 
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
 # ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
 
 Input_parkinson_usableDatasets.tse
 ```

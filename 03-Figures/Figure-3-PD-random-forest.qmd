@@ -11,14 +11,19 @@ output:
     highlight: haddock
 params:
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup}
 library(tidyverse)
-res_base_dir <- file.path("..", "02-Analyses", "results", "04-RF-LODO-PD-vs-Control", paste0(params$biobakery_tool, "-", "relative_abundance"))
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+res_base_dir <- file.path("..", "02-Analyses", baseout, "04-RF-LODO-PD-vs-Control", paste0(params$biobakery_tool, "-", "relative_abundance"))
 
 # create figure output directory
-outdir <- file.path("results", "Figure-3-RandomForest")
+outdir <- file.path(baseout, "Figure-3-RandomForest")
 dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 
 theme_set(theme_bw())

@@ -10,11 +10,16 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "02-alpha_beta_diversity", params$biobakery_tool)
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "02-alpha_beta_diversity", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -44,20 +49,20 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have more than 10 samples in cases and more than 10 in controls
+# Each dataset should have at least 10 samples in cases and 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
   filter(
-    sum(parkinson_for_analysis == "Control") > 10,
-    sum(parkinson_for_analysis == "PD") > 10
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
   )
 
 ## filter TSE to restrict to 'ok' datasets 
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
-# ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+# the prevalence and detection filter (params$filterFeatures) is applied only
+# before the beta diversity analyses: alpha diversity always uses all features
 
 Input_parkinson_usableDatasets.tse
 ```
@@ -160,6 +165,13 @@ Two dissimilarities are analyzed on `relative_abundance`:
 Distance matrices are computed once and reused for every test below.
 
 ```{r beta params}
+# Prevalence and detection filter, beta diversity only (alpha diversity above
+# always uses all features, so richness keeps the rare taxa it counts)
+if (params$filterFeatures) {
+  Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
+}
+Input_parkinson_usableDatasets.tse
+
 beta_metrics <- c(bray = "Bray-Curtis")
 if (params$biobakery_tool == "MetaPhlAn") {
   stopifnot("rowTree missing: run the alpha chunk that attaches the phylogeny first" =
@@ -180,7 +192,7 @@ beta_meta.df <- colData(Input_parkinson_usableDatasets.tse) %>%
 stopifnot("NA in PERMANOVA covariates" = !anyNA(beta_meta.df))
 ```
 
-```{r beta distances, cache=TRUE}
+```{r beta distances}
 beta_dist.list <- lapply(names(beta_metrics), function(metric) {
   if (metric == "wunifrac") {
     getDissimilarity(Input_parkinson_usableDatasets.tse, method = "unifrac",
@@ -203,7 +215,7 @@ $$
 
 PD labels are shuffled only within each study (`how(blocks = study_name)`), so the null distribution keeps the between-study structure intact. `study_name` stays in the model so that between-study variation is removed from the residuals and PD is tested within studies (`by = "margin"`). Its own marginal test is not meaningful under within-study permutations (its labels never move), so the `study_name` row is dropped from the reported table.
 
-```{r pooled PERMANOVA, cache=TRUE}
+```{r pooled PERMANOVA}
 set.seed(1234)
 perm_within_study <- how(blocks = beta_meta.df$study_name, nperm = n_perm)
 
@@ -234,7 +246,7 @@ $$
 
 PERMANOVA does not return a standard error, so per-study R2 cannot be pooled by random effects like the alpha diversities. Per-study p-values are combined with a sample-size-weighted Stouffer test as a summary; the pooled within-study PERMANOVA above remains the primary test.
 
-```{r per-study PERMANOVA, cache=TRUE}
+```{r per-study PERMANOVA}
 set.seed(1234)
 per_study_permanova.tb <- lapply(names(beta_metrics), function(metric) {
   full_dist.mat <- as.matrix(beta_dist.list[[metric]])
@@ -284,13 +296,17 @@ write_tsv(per_study_stouffer.tb, file = file.path(outdir, "beta-per-study-perman
 
 ## Homogeneity of dispersions (`betadisper`)
 
-PERMANOVA can be significant because PD and controls differ in spread rather than location. Dispersion is tested within each study (distance of each sample to its own group centroid, PD vs Control). The per-sample distances to centroid are then pooled in a linear model with study as fixed effect, giving one overall dispersion test:
+PERMANOVA can be significant because PD and controls differ in spread rather than location. Dispersion is tested within each study (distance of each sample to its own group centroid, PD vs Control). Distances are bias-adjusted (`bias.adjust = TRUE`): distances to a centroid estimated from the same samples shrink by about $\sqrt{(n-1)/n}$, which would otherwise make the smaller group of each study look less dispersed.
+
+Primary pooled test: the per-study difference in mean distance to centroid (PD - Control, Welch SE) is pooled with the same random-effects model as the meta-analyses (REML, Knapp-Hartung), giving an overall effect and its heterogeneity (I²).
+
+Check: the per-sample distances are also pooled in a linear model with study as fixed effect (one common PD effect, larger studies weigh more):
 
 $$
 distance~to~centroid \sim study~name + parkinson(Yes/No)
 $$
 
-```{r betadisper, cache=TRUE}
+```{r betadisper}
 set.seed(1234)
 betadisper_runs <- lapply(names(beta_metrics), function(metric) {
   full_dist.mat <- as.matrix(beta_dist.list[[metric]])
@@ -298,14 +314,22 @@ betadisper_runs <- lapply(names(beta_metrics), function(metric) {
   lapply(levels(beta_meta.df$study_name), function(study) {
     idx <- which(beta_meta.df$study_name == study)
     group <- beta_meta.df$parkinson_for_analysis[idx]
-    bd <- vegan::betadisper(as.dist(full_dist.mat[idx, idx]), group = group)
+    bd <- vegan::betadisper(as.dist(full_dist.mat[idx, idx]), group = group, bias.adjust = TRUE)
     bd_test <- vegan::permutest(bd, permutations = n_perm)
+
+    d_pd <- bd$distances[group == "PD"]
+    d_ctrl <- bd$distances[group == "Control"]
 
     list(
       summary = tibble(
         metric = metric, study_name = study,
-        mean_dist_Control = mean(bd$distances[group == "Control"]),
-        mean_dist_PD = mean(bd$distances[group == "PD"]),
+        n_Control = length(d_ctrl),
+        n_PD = length(d_pd),
+        mean_dist_Control = mean(d_ctrl),
+        mean_dist_PD = mean(d_pd),
+        # effect for the random-effects pooling: PD - Control, Welch SE
+        Beta = mean(d_pd) - mean(d_ctrl),
+        SE = sqrt(var(d_pd) / length(d_pd) + var(d_ctrl) / length(d_ctrl)),
         F = bd_test$tab$F[1],
         P.Value = bd_test$tab$`Pr(>F)`[1]
       ),
@@ -327,6 +351,27 @@ per_study_betadisper.tb <- map(betadisper_runs, "summary") %>%
 
 dist_to_centroid.tb <- map(betadisper_runs, "distances") %>% bind_rows()
 
+# primary: random-effects pooling of per-study PD - Control differences,
+# same model as the meta-analyses (REML, Knapp-Hartung)
+rma_betadisper.tb <- per_study_betadisper.tb %>%
+  group_by(metric) %>%
+  group_modify(function(x, ...) {
+    fit <- metafor::rma(yi = x$Beta, sei = x$SE, method = "REML", test = "knha")
+    tibble(
+      n_datasets = fit$k,
+      Beta     = fit$beta[[1]],
+      SE       = fit$se,
+      CI.L     = fit$ci.lb,
+      CI.R     = fit$ci.ub,
+      P.Value  = fit$pval,
+      tau2     = fit$tau2,
+      I2       = fit$I2,
+      Het.Pval = fit$QEp
+    )
+  }) %>%
+  ungroup()
+
+# check: pooled linear model with study as fixed effect
 pooled_betadisper.tb <- dist_to_centroid.tb %>%
   group_by(metric) %>%
   group_modify(~ lm(dist_to_centroid ~ study_name + parkinson_for_analysis, data = .x) %>%
@@ -334,10 +379,12 @@ pooled_betadisper.tb <- dist_to_centroid.tb %>%
                  filter(term == "parkinson_for_analysisPD")) %>%
   ungroup()
 
-kable(per_study_betadisper.tb, digits = 4)
-kable(pooled_betadisper.tb, digits = 4)
+kable(per_study_betadisper.tb, digits = 4, caption = "Per-study dispersion (bias-adjusted distances to centroid)")
+kable(rma_betadisper.tb, digits = 4, caption = "Random-effects pooled difference in distance to centroid (PD - Control)")
+kable(pooled_betadisper.tb, digits = 4, caption = "Check: linear model with study as fixed effect")
 
 write_tsv(per_study_betadisper.tb, file = file.path(outdir, "beta-per-study-betadisper.tsv"))
+write_tsv(rma_betadisper.tb, file = file.path(outdir, "beta-pooled-betadisper-rma.tsv"))
 write_tsv(pooled_betadisper.tb, file = file.path(outdir, "beta-pooled-betadisper-lm.tsv"))
 ```
 
@@ -349,7 +396,7 @@ $$
 
 Study is partialled out before ordination; the single constrained axis (dbRDA1) is the direction that best separates PD from controls, and MDS1 is the first residual (unconstrained) axis. Because dbRDA1 is fitted to PD, some separation is expected by construction: read it together with the PERMANOVA R2, not as evidence on its own.
 
-```{r partial dbRDA, cache=TRUE}
+```{r partial dbRDA}
 dbrda_scores.tb <- lapply(names(beta_metrics), function(metric) {
   dbrda_fit <- vegan::dbrda(
     beta_dist.list[[metric]] ~ parkinson_for_analysis + Condition(study_name),

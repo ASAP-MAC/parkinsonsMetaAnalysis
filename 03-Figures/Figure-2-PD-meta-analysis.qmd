@@ -10,6 +10,9 @@ format:
 editor: source
 params:
  overwrite_TSE_out: "yes"
+ # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+ # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+ filterFeatures: TRUE
 ---
 
 ```{r setup}
@@ -23,7 +26,10 @@ theme_set(theme_bw())
 set.seed(1234)
 
 # Create output directory
-outdir <- file.path("results", "Figure-2-PD-metaAnalysis")
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "Figure-2-PD-metaAnalysis")
+results_dir <- file.path("..", "02-Analyses", baseout)
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 #------------------------------
 # default parameters for filtering results to be plotted
@@ -36,7 +42,7 @@ source("../utils/mbForestPlot.R")
 
 ```{r MetaPhlAn forest plot}
 # load all sheets of the results
-MetaPhlAn_maslin2_results_path <- "../02-Analyses/results/03-PD-meta-analysis/MetaPhlAn/02-MetaPhlAn_MetaAnalysis_results_maaslin2.xlsx"
+MetaPhlAn_maslin2_results_path <- file.path(results_dir, "03-PD-meta-analysis", "MetaPhlAn", "02-MetaPhlAn_MetaAnalysis_results_maaslin2.xlsx")
 tmp_wb <- wb_load(MetaPhlAn_maslin2_results_path)
 MetaPhlAn_results.list <- sapply(tmp_wb$sheet_names, function(sheet) wb_to_df(tmp_wb, sheet), simplify = FALSE)
 
@@ -93,7 +99,7 @@ ggsave(plot = Forest_and_het_panel, filename = file.path(outdir, "01-forest-het-
 
 ```{r HUMAnN forest plot}
 # load all sheets of the results
-HUMAnN_maslin2_results_path <- "../02-Analyses/results/03-PD-meta-analysis/HUMAnN/02-HUMAnN_MetaAnalysis_results_maaslin2.xlsx"
+HUMAnN_maslin2_results_path <- file.path(results_dir, "03-PD-meta-analysis", "HUMAnN", "02-HUMAnN_MetaAnalysis_results_maaslin2.xlsx")
 tmp_wb <- wb_load(HUMAnN_maslin2_results_path)
 HUMAnN_results.list <- sapply(tmp_wb$sheet_names, function(sheet) wb_to_df(tmp_wb, sheet), simplify = FALSE)
 

@@ -10,12 +10,17 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
-  outdir: "results/Figure-1-worldMap-alpha-beta"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- params$outdir
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "Figure-1-worldMap-alpha-beta")
+results_dir <- file.path("..", "02-Analyses", baseout)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -43,20 +48,20 @@ Input_parkinson.tse <- Input_parkinson.tse[rowSums(assay(Input_parkinson.tse)) >
 # drop unused level of the parkinson_for_analysis
 Input_parkinson.tse$parkinson_for_analysis <- droplevels(Input_parkinson.tse$parkinson_for_analysis)
 
-# Each dataset should have more than 10 samples in cases and more than 10 in controls
+# Each dataset should have at least 10 samples in cases and 10 in controls
 ok_datasets <- Input_parkinson.tse@colData %>% 
   as.data.frame() %>% 
   group_by(study_name) %>% 
   filter(
-    sum(parkinson_for_analysis == "Control") > 10,
-    sum(parkinson_for_analysis == "PD") > 10
+    sum(parkinson_for_analysis == "Control") >= 10,
+    sum(parkinson_for_analysis == "PD") >= 10
   )
 
 ## filter TSE to restrict to 'ok' datasets 
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
 # ## Prevalence and detection filter
-# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+# Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
 
 Input_parkinson_usableDatasets.tse
 ```
@@ -99,7 +104,7 @@ plotting_levels <- c("MetaAnalysis", "WallenZD_2022", "QianY_2020", "NishiwakiH_
 "MaoL_2021", "JoS_2022", "DuruIC_2024", "BoktorJC_2023.2", "BoktorJC_2023", 
 "BedarfJR_2017")
 
-data_for_alpha_forest_plot.df <- read_tsv("../02-Analyses/results/02-alpha_beta_diversity/MetaPhlAn/alpha-meta-data-for-plot.tsv") %>% 
+data_for_alpha_forest_plot.df <- read_tsv(file.path(results_dir, "02-alpha_beta_diversity", "MetaPhlAn", "alpha-meta-data-for-plot.tsv")) %>% 
   mutate(study_name = factor(study_name, levels = plotting_levels),
          # a quick binary variable to make the plot prettier
          is_meta = study_name == "MetaAnalysis",
@@ -137,7 +142,7 @@ alpha_meta_analysis_plot.gg <- ggplot(data_for_alpha_forest_plot.df, aes(x = Bet
 Scores computed in `02-Analyses/02-alpha_beta_diversity.qmd`. dbRDA1 is the PD-constrained axis after removing the study effect; MDS1 is the first residual axis. The pooled within-study PERMANOVA R2 for PD is shown as subtitle.
 
 ```{r dbRDA plot}
-beta_results_dir <- file.path("../02-Analyses/results/02-alpha_beta_diversity/", params$biobakery_tool)
+beta_results_dir <- file.path(results_dir, "02-alpha_beta_diversity", params$biobakery_tool)
 
 dbrda_bray.df <- read_tsv(file.path(beta_results_dir, "beta-partial-dbRDA-scores.tsv")) %>%
   filter(metric == "bray")

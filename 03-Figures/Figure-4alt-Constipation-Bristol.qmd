@@ -10,6 +10,9 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup}
@@ -32,15 +35,17 @@ palette_constipation <- c(Fast = "#CFB267FF", Normal = "gray70", Slow = "#5480B5
 Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis_ready_datasets/01-dataset_complete-%s.tse", params$biobakery_tool))
 
 # initialize path where to read results from
-results_dir <- file.path("..", "02-Analyses", "results")
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+results_dir <- file.path("..", "02-Analyses", baseout)
 
 # initialize path where to save plots
-outdir <- file.path("results", "Figure-4-Constipation")
+outdir <- file.path(baseout, "Figure-4alt-Constipation-Bristol")
 ```
  
 ```{r read and incorporate constipation score}
 # load per-subject constipation scores
-constipation_scores <- read_tsv(file.path("..", "05-Supplements", "Supplementary Tables", sprintf("constipation_score_%s.tsv", params$biobakery_tool)))
+constipation_scores <- read_tsv(file.path(results_dir, "06-Constipation-score-and-mediation", params$biobakery_tool, sprintf("constipation_scores_per_sample_%s.tsv", params$biobakery_tool)))
 
 full_metadata.df <- as.data.frame(colData(Input.tse)) %>%
   dplyr::left_join(constipation_scores, by = "uuid") %>%
@@ -244,7 +249,7 @@ score2_panel.gg
 ## Panel B - Mediation scatterplot
 
 ```{r}
-results_clean <- read_tsv(file.path(results_dir, "05-Constipation-score" , params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
+results_clean <- read_tsv(file.path(results_dir, "06-Constipation-score-and-mediation", params$biobakery_tool, "mediation_Wallen", "mediation_analysis_results_full.tsv"))
 
 wallen_PD_Control_DA <- read_tsv(file.path(results_dir, "03-PD-meta-analysis", params$biobakery_tool, sprintf("01-%s_per_dataset_DA_results_maaslin2.tsv", params$biobakery_tool))) %>% 
   filter(study_name == "WallenZD_2022") %>% 

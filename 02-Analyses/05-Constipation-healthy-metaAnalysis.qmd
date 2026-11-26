@@ -10,11 +10,16 @@ format:
 editor: source
 params:
   biobakery_tool: "MetaPhlAn"
+  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
+  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  filterFeatures: TRUE
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
-outdir <- file.path("results", "05-Constipation-healthy-metaAnalysis", params$biobakery_tool)
+# two separate result sets, with and without the prevalence/detection filter
+baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+outdir <- file.path(baseout, "05-Constipation-healthy-metaAnalysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
 
@@ -44,7 +49,9 @@ Input_constipation_healthy.tse <- Input_constipation_healthy.tse[,!is.na(Input_c
 Input_constipation_healthy.tse <- Input_constipation_healthy.tse[, Input_constipation_healthy.tse$study_name != "BoktorJC_2023.2"]
 
 # Prevalence and detection filter
-Input_constipation_healthy.tse <- subsetByPrevalent(Input_constipation_healthy.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-4)
+if (params$filterFeatures) {
+  Input_constipation_healthy.tse <- subsetByPrevalent(Input_constipation_healthy.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
+}
 
 Input_constipation_healthy.tse
 ```

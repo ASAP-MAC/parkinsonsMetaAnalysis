@@ -166,10 +166,10 @@ MetaPhlAn_data_merged.tse$constipation_boktor_updrs <- case_when(
 # coalesce Boktor constipation variables together
 MetaPhlAn_data_merged.tse$constipation_boktor <- coalesce(MetaPhlAn_data_merged.tse$constipation_boktor_bristol, MetaPhlAn_data_merged.tse$constipation_boktor_updrs)
 
-# merge boktor into constipation_for_analysis
+# coalesce boktor into constipation_for_analysis
 MetaPhlAn_data_merged.tse$constipation_for_analysis <- coalesce(MetaPhlAn_data_merged.tse$constipation_for_analysis, MetaPhlAn_data_merged.tse$constipation_boktor)
 
-# merge Nishiwaki stool_frequency into the main constipation_for_analysis:
+# coalesce Nishiwaki stool_frequency into the main constipation_for_analysis:
 ## 1 - Curate nishiwaki constipation from the stool frequency
 ## bounded ranges so that "Fast" can be reached (case_when stops at the first TRUE)
 stool_frequency <- suppressWarnings(as.numeric(MetaPhlAn_data_merged.tse$NishiwakiH_2024_uncurated_stool_frequency))
