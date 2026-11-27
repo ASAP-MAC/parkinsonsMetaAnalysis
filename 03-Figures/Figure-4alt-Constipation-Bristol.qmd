@@ -11,7 +11,7 @@ editor: source
 params:
   biobakery_tool: "MetaPhlAn"
   # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
-  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  # results go to results/filteredFeatures/ (TRUE) or results/unfilteredFeatures/ (FALSE)
   filterFeatures: TRUE
 ---
 
@@ -36,7 +36,7 @@ Input.tse <- read_TSE_from_dir(sprintf("~/parkinsonMetaAnalysis_data/03-analysis
 
 # initialize path where to read results from
 # two separate result sets, with and without the prevalence/detection filter
-baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+baseout <- file.path("results", if (params$filterFeatures) "filteredFeatures" else "unfilteredFeatures")
 results_dir <- file.path("..", "02-Analyses", baseout)
 
 # initialize path where to save plots

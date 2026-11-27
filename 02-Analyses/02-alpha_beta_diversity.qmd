@@ -11,14 +11,17 @@ editor: source
 params:
   biobakery_tool: "MetaPhlAn"
   # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
-  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  # results go to results/filteredFeatures/ (TRUE) or results/unfilteredFeatures/ (FALSE)
   filterFeatures: TRUE
 ---
 
 ```{r setup, message=FALSE, warning=FALSE}
+# alpha and beta diversity are analyzed for MetaPhlAn only
+stopifnot("02-alpha_beta_diversity runs on MetaPhlAn only" = params$biobakery_tool == "MetaPhlAn")
+
 # ------ prepare outdir --------
 # two separate result sets, with and without the prevalence/detection filter
-baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+baseout <- file.path("results", if (params$filterFeatures) "filteredFeatures" else "unfilteredFeatures")
 outdir <- file.path(baseout, "02-alpha_beta_diversity", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------
@@ -61,8 +64,10 @@ ok_datasets <- Input_parkinson.tse@colData %>%
 ## filter TSE to restrict to 'ok' datasets 
 Input_parkinson_usableDatasets.tse <- Input_parkinson.tse[,Input_parkinson.tse$study_name %in% unique(ok_datasets$study_name)]
 
-# the prevalence and detection filter (params$filterFeatures) is applied only
-# before the beta diversity analyses: alpha diversity always uses all features
+# ## Prevalence and detection filter
+if (params$filterFeatures) {
+  Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
+}
 
 Input_parkinson_usableDatasets.tse
 ```
@@ -165,13 +170,6 @@ Two dissimilarities are analyzed on `relative_abundance`:
 Distance matrices are computed once and reused for every test below.
 
 ```{r beta params}
-# Prevalence and detection filter, beta diversity only (alpha diversity above
-# always uses all features, so richness keeps the rare taxa it counts)
-if (params$filterFeatures) {
-  Input_parkinson_usableDatasets.tse <- subsetByPrevalent(Input_parkinson_usableDatasets.tse, assay.type = "relative_abundance", prevalence = 0.05, detection = 1e-5)
-}
-Input_parkinson_usableDatasets.tse
-
 beta_metrics <- c(bray = "Bray-Curtis")
 if (params$biobakery_tool == "MetaPhlAn") {
   stopifnot("rowTree missing: run the alpha chunk that attaches the phylogeny first" =
@@ -179,7 +177,7 @@ if (params$biobakery_tool == "MetaPhlAn") {
   beta_metrics <- c(beta_metrics, wunifrac = "Weighted UniFrac")
 }
 
-n_perm <- 1999
+n_perm <- 9999
 
 # broom does not know the SumOfSqs/R2 columns of adonis2 and warns; output is correct
 tidy_adonis <- function(x) suppressWarnings(broom::tidy(x))

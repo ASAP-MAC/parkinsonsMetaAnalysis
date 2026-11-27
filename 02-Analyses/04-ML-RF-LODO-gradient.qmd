@@ -15,7 +15,7 @@ params:
   # "voom": limma::voom log2-CPM of the counts assay, as in 03-PD-metaAnalysis
   transform: "relative_abundance"
   # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
-  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  # results go to results/filteredFeatures/ (TRUE) or results/unfilteredFeatures/ (FALSE)
   filterFeatures: TRUE
 ---
 
@@ -90,9 +90,9 @@ stopifnot(
   params$transform %in% c("relative_abundance", "voom")
 )
 
-# create base directory output, e.g. results-filteredFeatures/04-RF-LODO-PD-vs-Control/MetaPhlAn-voom
+# create base directory output, e.g. results/filteredFeatures/04-RF-LODO-PD-vs-Control/MetaPhlAn-voom
 # two separate result sets, with and without the prevalence/detection filter
-baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+baseout <- file.path("results", if (params$filterFeatures) "filteredFeatures" else "unfilteredFeatures")
 outdir <- file.path(baseout, "04-RF-LODO-PD-vs-Control", sprintf("%s-%s", params$biobakery_tool, params$transform))
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 

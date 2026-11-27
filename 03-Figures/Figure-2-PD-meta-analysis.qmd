@@ -11,7 +11,7 @@ editor: source
 params:
  overwrite_TSE_out: "yes"
  # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
- # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+ # results go to results/filteredFeatures/ (TRUE) or results/unfilteredFeatures/ (FALSE)
  filterFeatures: TRUE
 ---
 
@@ -27,7 +27,7 @@ set.seed(1234)
 
 # Create output directory
 # two separate result sets, with and without the prevalence/detection filter
-baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+baseout <- file.path("results", if (params$filterFeatures) "filteredFeatures" else "unfilteredFeatures")
 outdir <- file.path(baseout, "Figure-2-PD-metaAnalysis")
 results_dir <- file.path("..", "02-Analyses", baseout)
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)

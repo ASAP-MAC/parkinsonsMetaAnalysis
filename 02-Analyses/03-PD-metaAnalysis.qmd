@@ -11,7 +11,7 @@ editor: source
 params:
   biobakery_tool: "MetaPhlAn"
   # TRUE: apply the prevalence (5%) / detection (1e-5) feature filter
-  # results go to results-filteredFeatures/ (TRUE) or results-unfiltered/ (FALSE)
+  # results go to results/filteredFeatures/ (TRUE) or results/unfilteredFeatures/ (FALSE)
   filterFeatures: TRUE
 ---
 
@@ -26,7 +26,7 @@ Choices for `relative_abundance` data:
 ```{r setup, message=FALSE, warning=FALSE}
 # ------ prepare outdir --------
 # two separate result sets, with and without the prevalence/detection filter
-baseout <- if (params$filterFeatures) "results-filteredFeatures" else "results-unfiltered"
+baseout <- file.path("results", if (params$filterFeatures) "filteredFeatures" else "unfilteredFeatures")
 outdir <- file.path(baseout, "03-PD-meta-analysis", params$biobakery_tool)
 dir.create(outdir, recursive = TRUE)
 # ------------------------------

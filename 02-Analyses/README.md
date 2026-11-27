@@ -29,7 +29,7 @@ mv 01-demographic-tables.docx results/.
 ```
 
 ```bash
-../utils/render_qmd.sh "02-alpha_beta_diversity.qmd"
+../utils/render_qmd.sh "02-alpha_beta_diversity.qmd" MetaPhlAn
 ```
 
 ## PD-Control meta-analysis

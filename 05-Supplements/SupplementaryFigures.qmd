@@ -326,7 +326,7 @@ PCoA_plot_col_parkinson <- pcoa_data.df %>%
 
 # save plot
 ggsave(plot = PCoA_plot_col_parkinson, filename = file.path(outdir, sprintf("SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.svg", suppFigIndx)), height = 6, width = 6)
-saveRDS(PCoA_plot_col_parkinson, file = file.path(outdir, sprintf("SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.svg", suppFigIndx)))
+saveRDS(PCoA_plot_col_parkinson, file = file.path(outdir, sprintf("SupplementaryFigure %s-PCoA-Bray-Curtis-by-PD.rds", suppFigIndx)))
 
 suppFigIndx <- suppFigIndx + 1
 PCoA_plot_col_parkinson
